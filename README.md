@@ -323,7 +323,7 @@ Scope discipline is the biggest risk on this project. Each phase ships something
 **Target hardware: NUCLEO-F446RE only. No other board until Phase 3.**
 
 #### Week 1 — Constraint database
-- Download STM32F446 CMSIS Pack from ST website
+- Download STM32F411 CMSIS Pack from ST website (NUCLEO-F411RE)
 - Write a Rust script to parse the alternate function XML tables into a compiled-in database (a `build.rs` that embeds the data at compile time)
 - Cover all GPIOs (PA0–PC15), all alternate functions AF0–AF15, peripheral-to-pin mappings
 - Unit test: given pin PA7, assert AF5 = SPI1_MOSI
