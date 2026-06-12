@@ -16,6 +16,7 @@ path = "src/main.rs"
 nucleus-compiler = { path = "../nucleus-compiler" }
 nucleus-db = { path = "../nucleus-db" }
 nucleus-lsp = { path = "../nucleus-lsp" }
+nucleus-trace = { path = "../nucleus-trace" }
 clap = { version = "4", features = ["derive"] }
 
 [lints]

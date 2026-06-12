@@ -1,0 +1,16 @@
+[package]
+name = "nucleus-itm"
+description = "Hand-rolled ARM CoreSight ITM/SWO packet decoder for the Nucleus toolchain"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# Deliberately dependency-free: the decoder must be trivially auditable and
+# fuzzable, with no third-party code on the parsing path.
+[dependencies]
+
+[lints]
+workspace = true

@@ -1,10 +1,9 @@
-//! The `nucleus` command-line interface.
+//! The `nucleus` command-line interface — command parsing and dispatch.
 //!
-//! Phases 2–3 implement the config→firmware path: `check` validates an
-//! `stm32.toml`, `init` scaffolds a project, `build` generates HAL init code and
-//! drives the cross toolchain, and `flash` programs the board. The remaining
-//! subcommands (`trace`, `lsp`) are declared so the surface is stable but land
-//! in later phases.
+//! The full surface is live: `check` validates an `stm32.toml`, `init` scaffolds
+//! a project, `build` generates HAL init code and drives the cross toolchain,
+//! `flash` programs the board, `lsp` starts the language server over stdio, and
+//! `trace` decodes ITM/SWO and streams events over a WebSocket.
 
 mod firmware;
 mod scaffold;
@@ -51,8 +50,24 @@ enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
-    /// Start the ITM trace daemon and dashboard. (Phase 5)
-    Trace,
+    /// Decode ITM/SWO trace and stream events over a WebSocket.
+    Trace {
+        /// Project config to read `[trace.variables]` from.
+        #[arg(long, default_value = "stm32.toml")]
+        config: PathBuf,
+        /// WebSocket port to serve decoded events on.
+        #[arg(long, default_value_t = nucleus_trace::DEFAULT_WS_PORT)]
+        ws_port: u16,
+        /// Replay a captured raw-SWO file instead of reading live trace.
+        #[arg(long)]
+        replay: Option<PathBuf>,
+        /// TCP address OpenOCD streams trace to (`tpiu config internal :PORT`).
+        #[arg(long, default_value = "127.0.0.1:3344")]
+        trace_tcp: String,
+        /// Also send setup commands to OpenOCD's telnet console at this address.
+        #[arg(long)]
+        openocd: Option<String>,
+    },
     /// Start the language server over stdio (spawned by the editor extension).
     Lsp,
 }
@@ -64,8 +79,78 @@ fn main() -> ExitCode {
         Command::Init { path } => run_init(&path),
         Command::Build { path } => firmware::build(&path),
         Command::Flash { path } => firmware::flash(&path),
-        Command::Trace => not_yet("trace", "Phase 5"),
+        Command::Trace {
+            config,
+            ws_port,
+            replay,
+            trace_tcp,
+            openocd,
+        } => run_trace(&config, ws_port, replay, trace_tcp, openocd),
         Command::Lsp => run_lsp(),
+    }
+}
+
+/// Start the trace daemon: decode ITM/SWO and stream events over a WebSocket.
+fn run_trace(
+    config: &Path,
+    ws_port: u16,
+    replay: Option<PathBuf>,
+    trace_tcp: String,
+    openocd: Option<String>,
+) -> ExitCode {
+    use nucleus_trace::{Source, TraceOptions, VariableMap};
+
+    // The variable map and clock settings come from stm32.toml when present;
+    // tracing still works (port-0 logs) without it.
+    let (variables, cpu_hz, swo_hz) = match std::fs::read_to_string(config) {
+        Ok(text) => match nucleus_compiler::config::parse(&text) {
+            Ok(cfg) => (
+                VariableMap::from_config(&cfg.trace),
+                cfg.device.clock_hz.unwrap_or(180_000_000) as u32,
+                cfg.trace.swo_freq.unwrap_or(2_000_000) as u32,
+            ),
+            Err(err) => {
+                eprintln!("error: {}: {err}", config.display());
+                return ExitCode::FAILURE;
+            }
+        },
+        Err(_) => {
+            eprintln!(
+                "warning: {} not found; tracing port-0 logs only (no named variables).",
+                config.display()
+            );
+            (VariableMap::new(), 180_000_000, 2_000_000)
+        }
+    };
+
+    let source = match replay {
+        Some(path) => Source::File(path),
+        None => Source::Tcp(trace_tcp.clone()),
+    };
+
+    // Derive the trace port for OpenOCD setup from the TCP address.
+    let openocd = openocd.map(|telnet| {
+        let trace_port = trace_tcp
+            .rsplit(':')
+            .next()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(3344);
+        (telnet, trace_port, cpu_hz, swo_hz)
+    });
+
+    let opts = TraceOptions {
+        ws_addr: format!("127.0.0.1:{ws_port}"),
+        source,
+        openocd,
+        variables,
+    };
+
+    match nucleus_trace::run_blocking(opts) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("error: trace failed: {err}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -78,11 +163,6 @@ fn run_lsp() -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-fn not_yet(name: &str, phase: &str) -> ExitCode {
-    eprintln!("nucleus {name}: not implemented yet (scheduled for {phase})");
-    ExitCode::FAILURE
 }
 
 /// Scaffold a new project under `path`.

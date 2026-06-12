@@ -399,15 +399,19 @@ The conflict→squiggle mapping lives in `nucleus-lsp::analysis` as pure functio
 
 ### Phase 5 — ITM Decoder + Trace Backend
 
+> **Status: ✅ Complete** (live-hardware capture is a maintainer step — see note). `nucleus-itm` decodes the CoreSight stream; `nucleus-trace` translates and streams it; `nucleus trace` runs the daemon.
+
 **Goal:** Decode CoreSight ITM from the SWO pin and stream it to clients.
 
 Scope: `nucleus-itm` (decoder) and `nucleus-trace` (OpenOCD telnet integration + WebSocket server), surfaced via `nucleus trace`. Implements the ARM CoreSight packet format from the spec.
 
 **Exit criteria:**
-- Decoder handles SWIT port 0 (UTF-8 logs) and ports 1–7 (typed values: f32, u16, u32, i32), matching port numbers to `[trace.variables]` names.
-- Decoder survives framing edge cases — packets spanning read boundaries, overflow packets, resync after a dropped connection — with **zero panics under fuzzing**.
-- `nucleus trace` reads OpenOCD over telnet and pushes decoded events as JSON over a WebSocket on port 7878.
-- Validated against real byte streams from a NUCLEO-F446RE.
+- Decoder handles SWIT port 0 (UTF-8 logs) and ports 1–7 (typed values: f32, u16, u32, i32), matching port numbers to `[trace.variables]` names. ✅ (decode in `nucleus-itm`, port→name/type mapping in `nucleus-trace::translate`)
+- Decoder survives framing edge cases — packets spanning read boundaries, overflow packets, resync after a dropped connection — with **zero panics under fuzzing**. ✅ (zero-dependency, length-checked decoder; a randomized test feeds thousands of arbitrary byte streams in arbitrary chunk sizes and asserts no panic + chunk-invariance; the buffer is capped for O(1) memory)
+- `nucleus trace` reads SWO (OpenOCD TCP trace port, or a captured-file replay) and pushes decoded events as JSON over a WebSocket on port 7878. ✅ (verified end-to-end: a real WebSocket client receives the decoded `log`/`variable`/`overflow` JSON)
+- Validated against real byte streams from a NUCLEO-F446RE. ⚙️ *The pipeline is validated against synthetic and replayed SWO captures in CI; capturing from the physical board requires OpenOCD + the ST-Link + hardware (the SWO command sequence is version-dependent — `nucleus trace --openocd` sends a best-effort setup, and `--replay <file>` plays back a capture).*
+
+The decoder is config-agnostic (raw port + payload bytes); `nucleus-trace` assigns meaning — port 0 reassembles UTF-8 log lines, ports 1–7 decode little-endian typed values named by `[[trace.variables]]` — and broadcasts JSON to every connected client.
 
 ---
 

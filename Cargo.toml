@@ -5,6 +5,8 @@ members = [
     "crates/nucleus-compiler",
     "crates/nucleus-cli",
     "crates/nucleus-lsp",
+    "crates/nucleus-itm",
+    "crates/nucleus-trace",
 ]
 
 [workspace.package]
