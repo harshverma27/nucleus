@@ -148,6 +148,15 @@ impl Database {
         self.entries.iter().filter(move |m| m.pin == pin)
     }
 
+    /// Every physical pin that has at least one alternate function, sorted and
+    /// deduplicated. Used by the LSP to offer pin-name completions.
+    pub fn pins(&self) -> Vec<Pin> {
+        let mut pins: Vec<Pin> = self.entries.iter().map(|m| m.pin).collect();
+        pins.sort_unstable();
+        pins.dedup();
+        pins
+    }
+
     /// Reverse lookup: the AF number that connects `pin` to
     /// `peripheral`'s `signal`, if any. Used by the constraint solver.
     pub fn find_af(&self, pin: Pin, peripheral: &str, signal: &str) -> Option<u8> {

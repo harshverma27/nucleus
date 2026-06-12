@@ -53,7 +53,7 @@ enum Command {
     },
     /// Start the ITM trace daemon and dashboard. (Phase 5)
     Trace,
-    /// Start the language server (used by the editor extension). (Phase 4)
+    /// Start the language server over stdio (spawned by the editor extension).
     Lsp,
 }
 
@@ -65,7 +65,18 @@ fn main() -> ExitCode {
         Command::Build { path } => firmware::build(&path),
         Command::Flash { path } => firmware::flash(&path),
         Command::Trace => not_yet("trace", "Phase 5"),
-        Command::Lsp => not_yet("lsp", "Phase 4"),
+        Command::Lsp => run_lsp(),
+    }
+}
+
+/// Start the language server over stdio. Runs until the editor disconnects.
+fn run_lsp() -> ExitCode {
+    match nucleus_lsp::run_stdio() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("error: language server failed: {err}");
+            ExitCode::FAILURE
+        }
     }
 }
 

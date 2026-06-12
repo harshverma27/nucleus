@@ -1,6 +1,6 @@
 [package]
-name = "nucleus-cli"
-description = "Nucleus CLI: the STM32 developer platform binary (nucleus check/build/flash/trace/lsp)"
+name = "nucleus-lsp"
+description = "Nucleus language server: live stm32.toml diagnostics, hover, and pin-name completion over LSP"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,15 +8,11 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
-[[bin]]
-name = "nucleus"
-path = "src/main.rs"
-
 [dependencies]
 nucleus-compiler = { path = "../nucleus-compiler" }
 nucleus-db = { path = "../nucleus-db" }
-nucleus-lsp = { path = "../nucleus-lsp" }
-clap = { version = "4", features = ["derive"] }
+tower-lsp = "0.20"
+tokio = { version = "1", features = ["rt-multi-thread", "io-std", "macros", "sync"] }
 
 [lints]
 workspace = true

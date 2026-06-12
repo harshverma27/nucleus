@@ -1,0 +1,56 @@
+{
+  "name": "nucleus-vscode",
+  "displayName": "Nucleus",
+  "description": "Live stm32.toml diagnostics, hover, and pin completion — a thin client for the nucleus language server.",
+  "version": "0.0.1",
+  "publisher": "harshverma27",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/harshverma27/nucleus"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "activationEvents": [
+    "workspaceContains:**/stm32.toml"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Nucleus",
+      "properties": {
+        "nucleus.serverPath": {
+          "type": "string",
+          "default": "nucleus",
+          "description": "Path to the `nucleus` CLI. The extension runs `nucleus lsp`."
+        },
+        "nucleus.trace.server": {
+          "type": "string",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Trace the communication between VS Code and the language server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
+    "watch": "npm run build -- --sourcemap --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.4.0"
+  }
+}
