@@ -7,6 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+readme = "README.md"
+keywords = ["stm32", "embedded", "gpio", "pinmux", "arm"]
+categories = ["embedded", "hardware-support"]
 
 [dependencies]
 roxmltree = "0.21"

@@ -7,6 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+readme = "README.md"
+keywords = ["arm", "coresight", "itm", "swo", "trace"]
+categories = ["embedded", "parser-implementations", "encoding"]
 
 # Deliberately dependency-free: the decoder must be trivially auditable and
 # fuzzable, with no third-party code on the parsing path.

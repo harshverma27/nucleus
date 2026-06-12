@@ -1,0 +1,121 @@
+name: "Nucleus check"
+description: "Validate stm32.toml with the Nucleus constraint solver (and optionally build firmware), and post a PR summary."
+branding:
+  icon: "cpu"
+  color: "blue"
+
+inputs:
+  config:
+    description: "Path to the stm32.toml to validate."
+    required: false
+    default: "stm32.toml"
+  build:
+    description: "Also run `nucleus build` (requires the ARM toolchain in the runner)."
+    required: false
+    default: "false"
+  version:
+    description: "nucleus-cli version to install from crates.io, or 'git' to build from this repo's main."
+    required: false
+    default: "*"
+  comment:
+    description: "Post the summary as a PR comment (needs `pull-requests: write`)."
+    required: false
+    default: "true"
+
+outputs:
+  conflicts:
+    description: "Number of conflicts reported by `nucleus check`."
+    value: ${{ steps.check.outputs.conflicts }}
+  firmware-size:
+    description: "Size of the built firmware.bin in bytes (empty if not built)."
+    value: ${{ steps.build.outputs.size }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install nucleus
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ "${{ inputs.version }}" = "git" ]; then
+          cargo install --git https://github.com/harshverma27/nucleus nucleus-cli --locked
+        else
+          ver="${{ inputs.version }}"
+          if [ "$ver" = "*" ]; then
+            cargo install nucleus-cli --locked
+          else
+            cargo install nucleus-cli --locked --version "$ver"
+          fi
+        fi
+
+    - name: nucleus check
+      id: check
+      shell: bash
+      run: |
+        set +e
+        out="$(nucleus check "${{ inputs.config }}" 2>&1)"
+        code=$?
+        echo "$out"
+        conflicts=$(printf '%s\n' "$out" | grep -c 'error:' || true)
+        echo "conflicts=$conflicts" >> "$GITHUB_OUTPUT"
+        echo "$out" > "$RUNNER_TEMP/nucleus-check.txt"
+        exit $code
+
+    - name: nucleus build
+      id: build
+      if: ${{ inputs.build == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        nucleus build
+        bin="build/firmware.bin"
+        if [ -f "$bin" ]; then
+          size=$(wc -c < "$bin" | tr -d ' ')
+          echo "size=$size" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Build summary
+      if: ${{ always() }}
+      shell: bash
+      run: |
+        check_out="$(cat "$RUNNER_TEMP/nucleus-check.txt" 2>/dev/null || echo '(no output)')"
+        conflicts="${{ steps.check.outputs.conflicts }}"
+        size="${{ steps.build.outputs.size }}"
+        {
+          echo "## 🧩 Nucleus"
+          echo
+          echo "Config: \`${{ inputs.config }}\`"
+          echo
+          if [ "${{ steps.check.outcome }}" = "success" ]; then
+            echo "- ✅ **Valid** — no conflicts."
+          else
+            echo "- ❌ **${conflicts:-?} conflict(s)** detected."
+          fi
+          [ -n "$size" ] && echo "- 📦 Firmware size: **$size bytes**"
+          echo
+          echo '```'
+          echo "$check_out"
+          echo '```'
+        } | tee "$RUNNER_TEMP/nucleus-summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Comment on PR
+      if: ${{ always() && inputs.comment == 'true' && github.event_name == 'pull_request' }}
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const body = fs.readFileSync(process.env.RUNNER_TEMP + '/nucleus-summary.md', 'utf8');
+          const marker = '<!-- nucleus-action -->';
+          const full = marker + '\n' + body;
+          const { owner, repo } = context.repo;
+          const issue_number = context.issue.number;
+          const { data: comments } = await github.rest.issues.listComments({ owner, repo, issue_number });
+          const existing = comments.find((c) => c.body && c.body.includes(marker));
+          if (existing) {
+            await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body: full });
+          } else {
+            await github.rest.issues.createComment({ owner, repo, issue_number, body: full });
+          }
