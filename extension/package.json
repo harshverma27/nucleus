@@ -1,7 +1,7 @@
 {
   "name": "nucleus-vscode",
   "displayName": "Nucleus",
-  "description": "Live stm32.toml diagnostics, hover, and pin completion — a thin client for the nucleus language server.",
+  "description": "Live stm32.toml diagnostics, hover, pin completion, and a real-time ITM trace dashboard — a thin client for the nucleus CLI.",
   "version": "0.0.1",
   "publisher": "harshverma27",
   "license": "MIT OR Apache-2.0",
@@ -14,13 +14,20 @@
   },
   "categories": [
     "Programming Languages",
-    "Linters"
+    "Linters",
+    "Visualization"
   ],
   "activationEvents": [
     "workspaceContains:**/stm32.toml"
   ],
   "main": "./dist/extension.js",
   "contributes": {
+    "commands": [
+      {
+        "command": "nucleus.openDashboard",
+        "title": "Nucleus: Open Trace Dashboard"
+      }
+    ],
     "configuration": {
       "title": "Nucleus",
       "properties": {
@@ -28,6 +35,11 @@
           "type": "string",
           "default": "nucleus",
           "description": "Path to the `nucleus` CLI. The extension runs `nucleus lsp`."
+        },
+        "nucleus.traceWebSocket": {
+          "type": "string",
+          "default": "ws://localhost:7878",
+          "description": "WebSocket the trace dashboard connects to (served by `nucleus trace`)."
         },
         "nucleus.trace.server": {
           "type": "string",
@@ -40,15 +52,21 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run build",
-    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
-    "watch": "npm run build -- --sourcemap --watch",
+    "build": "npm run build:extension && npm run build:dashboard",
+    "build:extension": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
+    "build:dashboard": "esbuild dashboard=src/dashboard/index.tsx --bundle --outdir=dist --format=iife && cp src/dashboard/index.html dist/index.html",
+    "watch": "npm run build:dashboard -- --sourcemap --watch",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
     "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
     "@types/vscode": "^1.85.0",
     "esbuild": "^0.20.0",
     "typescript": "^5.4.0"

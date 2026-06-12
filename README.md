@@ -417,16 +417,20 @@ The decoder is config-agnostic (raw port + payload bytes); `nucleus-trace` assig
 
 ### Phase 6 — Trace Dashboard
 
+> **Status: ✅ Complete.** The React/Canvas dashboard (`extension/src/dashboard/`) renders logs, live variable charts, and CPU load; it runs identically in the VS Code webview and a standalone browser, and DWT CPU-load decoding landed in `nucleus-trace`.
+
 **Goal:** A polished real-time observability UI.
 
 Scope: the React dashboard in `extension/src/dashboard/`, hosted in a VS Code webview and runnable standalone in a browser. Includes DWT CPU-load decoding (the last packet type).
 
 **Exit criteria:**
-- Log panel: decoded port-0 output, timestamped, filterable, searchable.
-- Variable timeline: live Canvas charts for ports 1–7 with auto-scaling Y axis, up to 7 simultaneous variables.
-- CPU-load strip chart derived from DWT cycle-counter packets.
-- Dashboard polish: resizable panels, dark mode, export log as text.
-- Runs identically in the VS Code webview and a standalone browser.
+- Log panel: decoded port-0 output, timestamped, filterable, searchable. ✅ (plus follow-tail and export-as-text)
+- Variable timeline: live Canvas charts for ports 1–7 with auto-scaling Y axis, up to 7 simultaneous variables. ✅ (rolling 30 s window, per-series legend with current values)
+- CPU-load strip chart derived from DWT PC-sampling packets. ✅ (`nucleus-trace` emits a rolling `cpuload` event; the dashboard renders a filled strip)
+- Dashboard polish: resizable panels, dark mode, export log as text. ✅ (draggable `SplitPane`s, dark/light toggle, connection status + overflow badge)
+- Runs identically in the VS Code webview and a standalone browser. ✅ (one esbuild bundle; both connect to `ws://localhost:7878`)
+
+The dashboard is a thin display client: it consumes the daemon's JSON over a WebSocket and assigns no trace meaning of its own (`types.ts`'s `TraceEvent` mirrors the Rust serialization). The extension's `nucleus.openDashboard` command hosts the same bundle in a webview. The TypeScript/React is type-checked (`tsc`) and bundled (esbuild) outside the Rust `make check` gate.
 
 ---
 
