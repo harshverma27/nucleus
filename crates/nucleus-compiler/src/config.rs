@@ -124,6 +124,19 @@ pub struct TraceVariable {
 #[derive(Debug)]
 pub struct ParseError(toml::de::Error);
 
+impl ParseError {
+    /// The byte span in the source text the error refers to, if the underlying
+    /// TOML parser recorded one. Used by the LSP to place a diagnostic range.
+    pub fn span(&self) -> Option<std::ops::Range<usize>> {
+        self.0.span()
+    }
+
+    /// The bare error message (without the `invalid stm32.toml:` prefix).
+    pub fn message(&self) -> &str {
+        self.0.message()
+    }
+}
+
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "invalid stm32.toml: {}", self.0.message())

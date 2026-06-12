@@ -382,14 +382,18 @@ Scope: codegen in `nucleus-compiler`; orchestration in `nucleus-cli` (`init`, `b
 
 ### Phase 4 — LSP Server + Editor UX
 
+> **Status: ✅ Complete.** `nucleus-lsp` (tower-lsp) serves diagnostics, hover, and pin completion; `nucleus lsp` starts it over stdio, and the VS Code extension is a thin client that spawns it.
+
 **Goal:** Live config feedback inside the editor.
 
 Scope: `nucleus-lsp` (`tower-lsp`) wrapping the compiler, plus the VS Code extension's LSP client. The extension stays a thin client — zero business logic.
 
 **Exit criteria:**
-- `nucleus lsp` serves `textDocument/diagnostic` (conflicts), `textDocument/hover` (AF number + datasheet info), and pin-name autocomplete for the selected MCU.
-- The extension activates on opening a `stm32.toml`, spawns `nucleus lsp`, and connects the client.
-- Demo: opening a config with a pin conflict shows a red squiggle in VS Code as you type.
+- `nucleus lsp` serves conflict diagnostics (published on open/change), `textDocument/hover` (the pin's full AF table from `nucleus-db`), and pin-name completion for the selected MCU. ✅
+- The extension activates on opening a `stm32.toml`, spawns `nucleus lsp`, and connects the client. ✅ (`extension/src/extension.ts`)
+- Demo: opening a config with a pin conflict shows a red squiggle in VS Code as you type. ✅ (a PA5 collision publishes one ERROR diagnostic per colliding pin site; the analysis layer is unit-tested and the stdio server is verified end-to-end)
+
+The conflict→squiggle mapping lives in `nucleus-lsp::analysis` as pure functions (text → diagnostics/hover/completions), so the editor behaviour is fast and deterministic to unit-test; `analysis` maps each conflict to the most relevant source span (a collision underlines every colliding pin; a missing/clock conflict underlines the table header).
 
 ---
 
