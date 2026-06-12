@@ -1,0 +1,157 @@
+//! STM32 constraint database for the Nucleus toolchain.
+//!
+//! Exposes a normalized pin ↔ alternate-function ↔ peripheral model and the
+//! lookup APIs the compiler and LSP build on. The data is currently a
+//! hand-verified seed for the **STM32F446RE**; the full CMSIS Device Family
+//! Pack parser that will populate it lives in [`pack`] and is not yet wired up.
+//!
+//! See the Phase 1 exit criteria in the project README.
+
+use std::fmt;
+use std::str::FromStr;
+
+mod data;
+pub mod pack;
+
+/// A GPIO port on the device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Port {
+    A,
+    B,
+    C,
+    D,
+    E,
+    F,
+    G,
+    H,
+}
+
+impl Port {
+    /// The port's letter, e.g. `Port::A` → `'A'`.
+    pub const fn letter(self) -> char {
+        match self {
+            Port::A => 'A',
+            Port::B => 'B',
+            Port::C => 'C',
+            Port::D => 'D',
+            Port::E => 'E',
+            Port::F => 'F',
+            Port::G => 'G',
+            Port::H => 'H',
+        }
+    }
+
+    const fn from_letter(c: char) -> Option<Port> {
+        match c {
+            'A' | 'a' => Some(Port::A),
+            'B' | 'b' => Some(Port::B),
+            'C' | 'c' => Some(Port::C),
+            'D' | 'd' => Some(Port::D),
+            'E' | 'e' => Some(Port::E),
+            'F' | 'f' => Some(Port::F),
+            'G' | 'g' => Some(Port::G),
+            'H' | 'h' => Some(Port::H),
+            _ => None,
+        }
+    }
+}
+
+/// A physical pin, e.g. `PA7` is `Port::A` pin `7`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Pin {
+    pub port: Port,
+    pub number: u8,
+}
+
+impl Pin {
+    pub const fn new(port: Port, number: u8) -> Pin {
+        Pin { port, number }
+    }
+}
+
+impl fmt::Display for Pin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "P{}{}", self.port.letter(), self.number)
+    }
+}
+
+/// Error returned when a string cannot be parsed as a [`Pin`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsePinError(String);
+
+impl fmt::Display for ParsePinError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid pin name: {:?} (expected e.g. \"PA7\")", self.0)
+    }
+}
+
+impl std::error::Error for ParsePinError {}
+
+impl FromStr for Pin {
+    type Err = ParsePinError;
+
+    fn from_str(s: &str) -> Result<Pin, ParsePinError> {
+        let err = || ParsePinError(s.to_string());
+        let rest = s
+            .strip_prefix('P')
+            .or_else(|| s.strip_prefix('p'))
+            .ok_or_else(err)?;
+        let mut chars = rest.chars();
+        let port = chars.next().and_then(Port::from_letter).ok_or_else(err)?;
+        let number: u8 = chars.as_str().parse().map_err(|_| err())?;
+        if number > 15 {
+            return Err(err());
+        }
+        Ok(Pin { port, number })
+    }
+}
+
+/// One alternate-function mapping: a [`Pin`] driving a peripheral signal at a
+/// given AF number (AF0–AF15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AfMapping {
+    pub pin: Pin,
+    pub af: u8,
+    /// Peripheral instance, e.g. `"SPI1"`.
+    pub peripheral: &'static str,
+    /// Signal on that peripheral, e.g. `"MOSI"`.
+    pub signal: &'static str,
+}
+
+/// A queryable constraint database for a single device.
+#[derive(Debug, Clone, Copy)]
+pub struct Database {
+    entries: &'static [AfMapping],
+}
+
+impl Database {
+    /// The hand-verified database for the NUCLEO-F446RE's STM32F446RE.
+    pub const fn f446re() -> Database {
+        Database {
+            entries: data::F446RE,
+        }
+    }
+
+    /// The alternate-function mapping for `pin` at alternate function `af`,
+    /// if one exists.
+    pub fn lookup(&self, pin: Pin, af: u8) -> Option<&AfMapping> {
+        self.entries.iter().find(|m| m.pin == pin && m.af == af)
+    }
+
+    /// Every alternate-function mapping available on `pin`.
+    pub fn alt_functions(&self, pin: Pin) -> impl Iterator<Item = &AfMapping> {
+        self.entries.iter().filter(move |m| m.pin == pin)
+    }
+
+    /// Reverse lookup: the AF number that connects `pin` to
+    /// `peripheral`'s `signal`, if any. Used by the constraint solver.
+    pub fn find_af(&self, pin: Pin, peripheral: &str, signal: &str) -> Option<u8> {
+        self.entries
+            .iter()
+            .find(|m| m.pin == pin && m.peripheral == peripheral && m.signal == signal)
+            .map(|m| m.af)
+    }
+}
+
+#[cfg(test)]
+mod tests;
