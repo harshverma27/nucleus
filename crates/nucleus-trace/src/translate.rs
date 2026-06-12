@@ -5,10 +5,16 @@
 //! named by the project's `[[trace.variables]]` table. The mapping is pure and
 //! unit-tested; the async plumbing in [`crate::server`] just forwards results.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use nucleus_itm::Packet;
 use serde::Serialize;
+
+/// The DWT hardware-source discriminator for periodic PC-sample packets.
+const DWT_PC_SAMPLE: u8 = 2;
+
+/// How many PC samples the rolling CPU-load estimate averages over.
+const CPU_WINDOW: usize = 32;
 
 /// The numeric type a traced variable's bytes decode to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +132,8 @@ pub enum TraceEvent {
     },
     /// The device reported a trace FIFO overflow.
     Overflow,
+    /// Estimated CPU utilization in `[0, 1]`, derived from DWT PC sampling.
+    CpuLoad { load: f64 },
 }
 
 /// Stateful translator: maps a stream of [`Packet`]s to [`TraceEvent`]s,
@@ -135,6 +143,8 @@ pub struct Translator {
     vars: VariableMap,
     /// Bytes received on port 0 since the last newline.
     log_line: Vec<u8>,
+    /// Recent DWT PC samples (`true` = running, `false` = asleep) for CPU load.
+    cpu_samples: VecDeque<bool>,
 }
 
 impl Translator {
@@ -142,6 +152,7 @@ impl Translator {
         Translator {
             vars,
             log_line: Vec::new(),
+            cpu_samples: VecDeque::with_capacity(CPU_WINDOW),
         }
     }
 
@@ -159,9 +170,31 @@ impl Translator {
                 None => Vec::new(), // unmapped port: nothing to report
             },
             Packet::Overflow => vec![TraceEvent::Overflow],
-            // Timestamps, sync, hardware, extension carry no user-facing value yet.
+            // DWT periodic PC sampling → rolling CPU-load estimate.
+            Packet::Hardware {
+                discriminator: DWT_PC_SAMPLE,
+                data,
+            } => self.push_pc_sample(data),
+            // Timestamps, sync, other hardware, extension carry no value yet.
             _ => Vec::new(),
         }
+    }
+
+    /// Record one DWT PC sample and emit the updated rolling CPU load.
+    ///
+    /// A periodic PC-sample packet is a single `0x00` byte when the core was
+    /// asleep (WFI/WFE) at the sample instant, or a 4-byte program counter when
+    /// it was executing. Load is the fraction of recent samples that were
+    /// running.
+    fn push_pc_sample(&mut self, data: &[u8]) -> Vec<TraceEvent> {
+        let running = !(data.len() == 1 && data[0] == 0x00);
+        if self.cpu_samples.len() == CPU_WINDOW {
+            self.cpu_samples.pop_front();
+        }
+        self.cpu_samples.push_back(running);
+        let active = self.cpu_samples.iter().filter(|&&r| r).count();
+        let load = active as f64 / self.cpu_samples.len() as f64;
+        vec![TraceEvent::CpuLoad { load }]
     }
 
     /// Flush any buffered partial log line (e.g. on shutdown).
@@ -306,6 +339,46 @@ mod tests {
             .translate(&Packet::Instrumentation {
                 port: 5,
                 data: vec![1, 2, 3, 4]
+            })
+            .is_empty());
+    }
+
+    #[test]
+    fn dwt_pc_samples_estimate_cpu_load() {
+        let mut t = Translator::new(map());
+        // Discriminator 2 = PC sample. Sleeping sample = single 0x00 byte;
+        // running sample = a 4-byte PC value.
+        let sleep = Packet::Hardware {
+            discriminator: 2,
+            data: vec![0x00],
+        };
+        let run = Packet::Hardware {
+            discriminator: 2,
+            data: vec![0x00, 0x10, 0x00, 0x08],
+        };
+
+        // First sample running -> load 1.0.
+        let e = t.translate(&run);
+        assert_eq!(e, vec![TraceEvent::CpuLoad { load: 1.0 }]);
+        // Then one sleeping -> 1 of 2 running -> 0.5.
+        let e = t.translate(&sleep);
+        assert_eq!(e, vec![TraceEvent::CpuLoad { load: 0.5 }]);
+    }
+
+    #[test]
+    fn cpu_load_event_json_shape() {
+        let json = serde_json::to_value(TraceEvent::CpuLoad { load: 0.25 }).unwrap();
+        assert_eq!(json, serde_json::json!({"kind": "cpuload", "load": 0.25}));
+    }
+
+    #[test]
+    fn non_pc_hardware_packets_are_ignored() {
+        let mut t = Translator::new(map());
+        // Discriminator 1 = exception trace, not PC sampling.
+        assert!(t
+            .translate(&Packet::Hardware {
+                discriminator: 1,
+                data: vec![0x01, 0x02]
             })
             .is_empty());
     }

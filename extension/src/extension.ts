@@ -10,9 +10,18 @@ import {
   TransportKind,
 } from "vscode-languageclient/node";
 
+import { openDashboard } from "./tracePanel";
+
 let client: LanguageClient | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
+  // The trace dashboard command (hosts the React webview).
+  context.subscriptions.push(
+    vscode.commands.registerCommand("nucleus.openDashboard", () =>
+      openDashboard(context)
+    )
+  );
+
   const config = vscode.workspace.getConfiguration("nucleus");
   const command = config.get<string>("serverPath", "nucleus");
 
