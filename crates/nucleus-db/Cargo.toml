@@ -8,5 +8,11 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[dependencies]
+roxmltree = "0.21"
+
+[build-dependencies]
+roxmltree = "0.21"
+
 [lints]
 workspace = true

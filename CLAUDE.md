@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-**Phase 1 has started.** The Cargo workspace exists with one real crate, `crates/nucleus-db` (pin/AF/peripheral model + lookup API, hand-verified F446RE seed data, unit-tested). The remaining crates (`nucleus-compiler`, `nucleus-cli`, `nucleus-lsp`, `nucleus-itm`, `nucleus-trace`), the `extension/`, and `xtask/` are still `README.md` placeholders — no source yet. When asked to "build" or "run" something that doesn't exist, the task is usually to *create* it per the design in `README.md`, not to find existing code. Verify whether a crate/file actually exists before assuming.
+**Phase 1 is complete.** The Cargo workspace exists with one real crate, `crates/nucleus-db`: a pin/AF/peripheral model with lookup APIs, generated at build time (`build.rs`) from ST's open pin data XML vendored in `crates/nucleus-db/packdata/`. The full F446RE table (~275 mappings across 45 GPIOs) is byte-deterministic and cross-validated by a unit test against a hand-verified datasheet seed (`src/data.rs::SEED`). The remaining crates (`nucleus-compiler`, `nucleus-cli`, `nucleus-lsp`, `nucleus-itm`, `nucleus-trace`), the `extension/`, and `xtask/` are still `README.md` placeholders — no source yet. When asked to "build" or "run" something that doesn't exist, the task is usually to *create* it per the design in `README.md`, not to find existing code.
 
-The full CMSIS-pack AF-table parser (`nucleus-db/src/pack.rs`) is a documented stub: the vendored `cmsis-device-f4` pack carries only register headers, **not** the pin↔AF mux tables, so `nucleus-db` runs on a small hand-verified seed (`src/data.rs`) until a CMSIS Device Family Pack (with GPIO AF XML) is added. Completing the parser and widening coverage to all GPIOs is the remaining Phase 1 work.
+Key `nucleus-db` facts: one (pin, AF) can carry **multiple** signals (SPI/I2S share AF numbers), so `Database::lookup` returns an iterator, not an `Option`. `src/pack.rs` is deliberately self-contained (no `crate::` types) because `build.rs` includes it via `#[path]`. Upstream data anomalies are never fixed by editing `packdata/` — structural ones are normalized in the parser (documented at `pack::PATCHES`), per-entry ones go in the `PATCHES` table.
 
 `README.md` (root) is the authoritative product spec and roadmap. Read it before doing design or implementation work — it defines the component boundaries, the `stm32.toml` format, the 8-phase roadmap (each phase gated by measurable exit criteria), and known hard problems. `tasks.txt` holds the current Week 1 task breakdown for the Phase 1 constraint database.
 
@@ -41,9 +41,12 @@ Multi-crate Cargo workspace. Each crate is independently testable; shared logic 
 - `xtask` — developer automation (pack parsing, codegen, CI helpers), invoked as `cargo xtask`.
 - `extension/` — VS Code extension; React dashboard under `extension/src/dashboard/`, bundled by esbuild.
 
-## Vendored data source
+## Vendored data sources
 
-`cmsis-device-f4-2.6.11/` is ST's official CMSIS device package for the STM32F4 family, vendored in as the **source of truth for the constraint database** (`nucleus-db`). Relevant device headers include `Include/stm32f411xe.h` and `Include/stm32f446xx.h`. Treat this as read-only upstream data — do not hand-edit it; corrections to pack data belong in a patch table inside `nucleus-db` (the README flags pack-data inconsistency as the biggest time sink).
+- `crates/nucleus-db/packdata/` — ST's open pin data XML (from [STM32_open_pin_data](https://github.com/STMicroelectronics/STM32_open_pin_data)): the MCU package pinout and the GPIO AF mux tables. **This is the source of truth for the constraint database**; `build.rs` parses it at build time. See `packdata/README.md`.
+- `cmsis-device-f4-2.6.11/` — ST's CMSIS device package (register/startup headers, e.g. `Include/stm32f446xx.h`). Carries **no** pin↔AF mux data; kept for future HAL/register work (codegen, Phase 3).
+
+Both are read-only upstream data — never hand-edit them; corrections to pack data belong in the patch table in `nucleus-db/src/pack.rs` (the README flags pack-data inconsistency as the biggest time sink).
 
 ## Commands
 

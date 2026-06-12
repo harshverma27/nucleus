@@ -132,10 +132,15 @@ impl Database {
         }
     }
 
-    /// The alternate-function mapping for `pin` at alternate function `af`,
-    /// if one exists.
-    pub fn lookup(&self, pin: Pin, af: u8) -> Option<&AfMapping> {
-        self.entries.iter().find(|m| m.pin == pin && m.af == af)
+    /// Every mapping for `pin` at alternate function `af`.
+    ///
+    /// Returns an iterator because one (pin, AF) can carry several peripheral
+    /// signals — e.g. on the F446 PA4/AF5 is both `SPI1_NSS` and `I2S1_WS`
+    /// (SPI and I2S share the same hardware block and AF number).
+    pub fn lookup(&self, pin: Pin, af: u8) -> impl Iterator<Item = &AfMapping> {
+        self.entries
+            .iter()
+            .filter(move |m| m.pin == pin && m.af == af)
     }
 
     /// Every alternate-function mapping available on `pin`.
