@@ -25,9 +25,14 @@ Nucleus replaces both with a CLI-first, version-controllable, CI-friendly workfl
 - [The stm32.toml Format](#the-stm32toml-format)
 - [Tech Stack](#tech-stack)
 - [Phased Roadmap](#phased-roadmap)
-  - [Phase 1 — Pinmux MVP](#phase-1--pinmux-mvp-month-1)
-  - [Phase 2 — SWO Logging](#phase-2--swo-logging-month-2)
-  - [Phase 3 — Full Trace Dashboard](#phase-3--full-trace-dashboard-month-3)
+  - [Phase 1 — Constraint Database Foundation](#phase-1--constraint-database-foundation)
+  - [Phase 2 — Config Parser + Constraint Solver](#phase-2--config-parser--constraint-solver)
+  - [Phase 3 — HAL Code Generation + Build](#phase-3--hal-code-generation--build)
+  - [Phase 4 — LSP Server + Editor UX](#phase-4--lsp-server--editor-ux)
+  - [Phase 5 — ITM Decoder + Trace Backend](#phase-5--itm-decoder--trace-backend)
+  - [Phase 6 — Trace Dashboard](#phase-6--trace-dashboard)
+  - [Phase 7 — Distribution + Release Automation](#phase-7--distribution--release-automation)
+  - [Phase 8 — Docs, Generality Proof + Community Launch](#phase-8--docs-generality-proof--community-launch)
 - [Known Hard Problems](#known-hard-problems)
 - [Scope Discipline Rules](#scope-discipline-rules)
 - [Naming](#naming)
@@ -133,10 +138,10 @@ For Phase 1, the database covers exactly one MCU: **STM32F446RE** (the chip on t
 - **Clock domain disabled:** A peripheral configured but its bus clock (`APB1`/`APB2`) not enabled
 - **Missing pins:** A peripheral declared without all required pins (e.g. SPI without MOSI)
 
-#### What the compiler deliberately skips (Phase 1)
+#### What the compiler deliberately skips (early phases)
 
 - DMA channel collision detection — hard, device-specific, low perceived value early on
-- Full clock tree validation — complex, defer to Phase 2
+- Full clock tree validation — complex, not scheduled (only basic clock-domain checks ship, in Phase 2)
 - Middleware integration — too much maintenance burden
 
 #### HAL codegen strategy (important architectural decision)
@@ -178,7 +183,7 @@ Nucleo board (SWO pin)
 
 - **SWIT (Software Instrumentation Trace) packets — Port 0:** Decoded as UTF-8 log messages. This replaces `printf` over UART — faster, zero-wasted CPU cycles on waiting for UART TX.
 - **SWIT packets — Ports 1–7:** Decoded as typed variable values (f32, u16, i32 etc.) for live variable tracing. Firmware calls `ITM_SendChar()` with a port number encoding the variable identity.
-- **DWT (Data Watchpoint and Trace) packets:** CPU cycle counter data, used for load estimation. Phase 3 only.
+- **DWT (Data Watchpoint and Trace) packets:** CPU cycle counter data, used for load estimation. Phase 6 only.
 
 #### What firmware needs (minimal)
 
@@ -221,7 +226,7 @@ A React panel embedded in VS Code. Connects to the daemon's WebSocket. Three pan
 
 **Variable timeline panel** — each traced variable (ports 1–7) plotted as a live time-series chart on a Canvas element. X-axis is wall clock time, Y-axis auto-scales to the value range. Up to 7 simultaneous variables. New data points stream in at whatever rate the firmware emits them — typically sub-millisecond latency.
 
-**CPU load panel** — derived from DWT cycle counter packets, showing approximate CPU utilization as a rolling strip chart. Phase 3 only.
+**CPU load panel** — derived from DWT cycle counter packets, showing approximate CPU utilization as a rolling strip chart. Phase 6 only.
 
 ---
 
@@ -312,96 +317,123 @@ type = "u32"
 
 ## Phased Roadmap
 
-Scope discipline is the biggest risk on this project. Each phase ships something real and usable before the next begins.
+Scope discipline is the biggest risk on this project. Each phase ships something real and usable before the next begins, and is gated by **exit criteria** — measurable conditions that must hold before the next phase starts. Phases ship when their criteria are met, not on a calendar.
+
+**The end product:** a polished, open-source STM32 toolchain a stranger can install in one command (`cargo install` + VS Code Marketplace), with GitHub Actions automating cross-platform releases. A published tool with real users is the goal.
+
+**Target hardware: NUCLEO-F446RE only** through Phase 7. A second MCU lands in Phase 8 to prove the design generalizes.
 
 ---
 
-### Phase 1 — Pinmux MVP (Month 1)
+### Phase 1 — Constraint Database Foundation
 
-**Goal: A developer can replace CubeMX pin config with `stm32.toml` for the NUCLEO-F446RE.**
+**Goal:** Turn the vendored CMSIS F4 pack into an embedded, deterministic pin/AF/peripheral database for the STM32F446RE.
 
-**Target hardware: NUCLEO-F446RE only. No other board until Phase 3.**
+Scope: `nucleus-db`. Parse the alternate-function tables (all GPIOs PA0–PC15, all AF0–AF15, peripheral-to-pin mappings), normalize inconsistent pack data, and embed the result at compile time (`build.rs` or `xtask`). Known pack errors go in a hand-maintained patch table.
 
-#### Week 1 — Constraint database
-- Download STM32F411 CMSIS Pack from ST website (NUCLEO-F411RE)
-- Write a Rust script to parse the alternate function XML tables into a compiled-in database (a `build.rs` that embeds the data at compile time)
-- Cover all GPIOs (PA0–PC15), all alternate functions AF0–AF15, peripheral-to-pin mappings
-- Unit test: given pin PA7, assert AF5 = SPI1_MOSI
-
-#### Week 2 — Parser + conflict solver
-- Implement `stm32.toml` parser using the `toml` crate with typed structs
-- Implement conflict detection: pin collision, AF mismatch, missing required pins, clock domain disabled
-- `nucleus check` command: reads `stm32.toml`, prints conflicts with pin names and descriptions, exits non-zero if any error
-- Integration test: a `stm32.toml` with a deliberate PA5 collision should produce exactly one error
-
-#### Week 3 — Code generator
-- Emit `nucleus_init.c` and `nucleus_init.h`
-- Generated code calls standard ST HAL functions (`HAL_UART_Init`, `HAL_SPI_Init` etc.) with resolved parameters — does NOT reimplement HAL
-- Test on a real NUCLEO-F446RE: generated init code compiles and initializes peripherals correctly
-
-#### Week 4 — LSP server + VS Code extension skeleton
-- Implement LSP server using `tower-lsp`: textDocument/diagnostic (conflicts as squiggles), textDocument/hover (pin info)
-- VS Code extension: activate on `stm32.toml` open, spawn `nucleus lsp`, connect LSP client
-- Demo: open a `stm32.toml` with a pin conflict, see a red squiggle appear in VS Code
-
-**Phase 1 deliverable: publish extension to VS Code Marketplace. Get first external users.**
+**Exit criteria:**
+- `nucleus-db` exposes pin ↔ AF ↔ peripheral lookup APIs.
+- The compiled database is byte-deterministic across builds (required for testable CI).
+- Unit tests assert known mappings (e.g. PA7 → AF5 = SPI1_MOSI) and negative cases.
+- Pack-data anomalies are recorded in the patch table for traceability.
 
 ---
 
-### Phase 2 — SWO Logging (Month 2)
+### Phase 2 — Config Parser + Constraint Solver
 
-**Goal: A developer can replace UART `printf` debugging with ITM port 0 logging, visible in VS Code.**
+**Goal:** Parse `stm32.toml` and catch every Phase-1-class conflict.
 
-#### Week 5 — OpenOCD integration + ITM packet decoder
-- Connect to OpenOCD over telnet, send commands to configure SWO capture
-- Implement ARM CoreSight ITM packet decoder in Rust from the architecture spec
-- Decode SWIT packets on port 0 as UTF-8 strings
-- Unit test packet decoder with known byte sequences from the spec
+Scope: `nucleus-compiler` parser + solver, surfaced via `nucleus check`. Conflict classes: pin collision, AF mismatch, missing required pins, clock domain disabled. No DMA collision detection; no full clock-tree solving (only "is the bus clock enabled?").
 
-#### Week 6 — WebSocket server + log panel
-- `nucleus trace` command: starts ITM daemon, opens VS Code webview panel
-- WebSocket server on port 7878 pushes decoded log messages as JSON
-- React log panel in VS Code Webview: timestamped messages, filterable by content
-- Test on real hardware: firmware calls `nucleus_log("hello")`, message appears in VS Code
-
-#### Week 7 — Variable tracing (ports 1–7)
-- Decode SWIT packets on ports 1–7 as typed values (f32, u16, u32, i32)
-- Match port numbers to variable names declared in `[trace.variables]`
-- Push typed variable events over WebSocket
-- React variable timeline panel: live Canvas chart, auto-scaling Y axis
-
-#### Week 8 — Polish + docs
-- Write firmware integration guide (how to enable ITM in OpenOCD config, what 4 lines of C to add)
-- Write full project README
-- Record demo video: edit `stm32.toml` → see squiggles → fix config → flash firmware → live variable chart in VS Code
+**Exit criteria:**
+- `nucleus check` reads `stm32.toml`, prints conflicts with pin names and descriptions, and exits non-zero on any error (so CI can gate on it).
+- All four conflict classes are detected and unit-tested.
+- Integration test: a `stm32.toml` with a deliberate PA5 collision produces exactly one error.
 
 ---
 
-### Phase 3 — Full Trace Dashboard + CI Story (Month 3)
+### Phase 3 — HAL Code Generation + Build
 
-**Goal: A complete CI pipeline for STM32 projects + CPU load visualization + expand to one more MCU family.**
+**Goal:** Go from validated config to flashed firmware.
 
-#### Week 9 — GitHub Actions integration
-- `nucleus-action`: a GitHub Action that runs `nucleus check`, builds firmware with `nucleus build`, and posts a summary comment on PRs showing: resolved pin assignments, conflict count, firmware binary size
-- Write a sample `.github/workflows/nucleus.yml` that people can copy
-- Test on a real repository with deliberate conflicts to verify PR annotations
+Scope: codegen in `nucleus-compiler`; orchestration in `nucleus-cli` (`init`, `build`, `flash`). Generated code calls stock ST HAL `Init` functions with resolved parameters — it does **not** reimplement the HAL.
 
-#### Week 10 — DWT CPU load + dashboard polish
-- Decode DWT cycle counter packets (PC sampling)
-- Compute rolling CPU utilization estimate
-- Add CPU load strip chart to the dashboard
-- Dashboard layout polish: resizable panels, dark mode, export log as text file
+**Exit criteria:**
+- `nucleus init` scaffolds a project (`stm32.toml`, `CMakeLists.txt`, `src/main.c`, CI workflow).
+- Codegen emits `nucleus_config.h` (typed per-peripheral config structs) and `nucleus_init.c` (a single `Nucleus_Init()` calling `HAL_*_Init` functions).
+- `nucleus build` produces `.elf` and `.bin` via CMake + arm-none-eabi-gcc; `nucleus flash` programs the board.
+- Generated init code compiles and correctly initializes peripherals on a real NUCLEO-F446RE.
 
-#### Week 11 — Second MCU (STM32L476RG / NUCLEO-L476RG)
-- Extend constraint database to cover STM32L476RG
-- Validate that the architecture generalizes (this is the real test of the database design)
-- Add `family = "STM32L476RG"` support to `stm32.toml`
+---
 
-#### Week 12 — Release + community
-- Write full documentation site (mdBook or Docusaurus, hosted on GitHub Pages)
-- Post to: r/stm32, r/embedded, STM32 Discord, Embedded.fm Discord, Hacker News Show HN
-- Submit to Awesome Embedded list on GitHub
-- Write a technical blog post: "Implementing ARM CoreSight ITM packet decoding from scratch"
+### Phase 4 — LSP Server + Editor UX
+
+**Goal:** Live config feedback inside the editor.
+
+Scope: `nucleus-lsp` (`tower-lsp`) wrapping the compiler, plus the VS Code extension's LSP client. The extension stays a thin client — zero business logic.
+
+**Exit criteria:**
+- `nucleus lsp` serves `textDocument/diagnostic` (conflicts), `textDocument/hover` (AF number + datasheet info), and pin-name autocomplete for the selected MCU.
+- The extension activates on opening a `stm32.toml`, spawns `nucleus lsp`, and connects the client.
+- Demo: opening a config with a pin conflict shows a red squiggle in VS Code as you type.
+
+---
+
+### Phase 5 — ITM Decoder + Trace Backend
+
+**Goal:** Decode CoreSight ITM from the SWO pin and stream it to clients.
+
+Scope: `nucleus-itm` (decoder) and `nucleus-trace` (OpenOCD telnet integration + WebSocket server), surfaced via `nucleus trace`. Implements the ARM CoreSight packet format from the spec.
+
+**Exit criteria:**
+- Decoder handles SWIT port 0 (UTF-8 logs) and ports 1–7 (typed values: f32, u16, u32, i32), matching port numbers to `[trace.variables]` names.
+- Decoder survives framing edge cases — packets spanning read boundaries, overflow packets, resync after a dropped connection — with **zero panics under fuzzing**.
+- `nucleus trace` reads OpenOCD over telnet and pushes decoded events as JSON over a WebSocket on port 7878.
+- Validated against real byte streams from a NUCLEO-F446RE.
+
+---
+
+### Phase 6 — Trace Dashboard
+
+**Goal:** A polished real-time observability UI.
+
+Scope: the React dashboard in `extension/src/dashboard/`, hosted in a VS Code webview and runnable standalone in a browser. Includes DWT CPU-load decoding (the last packet type).
+
+**Exit criteria:**
+- Log panel: decoded port-0 output, timestamped, filterable, searchable.
+- Variable timeline: live Canvas charts for ports 1–7 with auto-scaling Y axis, up to 7 simultaneous variables.
+- CPU-load strip chart derived from DWT cycle-counter packets.
+- Dashboard polish: resizable panels, dark mode, export log as text.
+- Runs identically in the VS Code webview and a standalone browser.
+
+---
+
+### Phase 7 — Distribution + Release Automation
+
+**Goal:** Any stranger can install Nucleus in one command, and releases ship themselves.
+
+Scope: packaging, publishing, and GitHub Actions release automation — the headline outcome of the project.
+
+**Exit criteria:**
+- `cargo install nucleus-cli` installs a working CLI (published to crates.io).
+- The extension is published and installable from the VS Code Marketplace.
+- A GitHub Actions release workflow triggers on a version tag and: builds cross-platform CLI binaries (Linux/macOS/Windows, x86_64 + arm64), publishes the crates, and packages + uploads the `.vsix`.
+- Releases follow semver and ship with a generated changelog.
+- A reusable `nucleus-action` runs `nucleus check` + `nucleus build` and posts a PR summary (resolved pins, conflict count, firmware size); a copy-paste `nucleus.yml` is documented.
+
+---
+
+### Phase 8 — Docs, Generality Proof + Community Launch
+
+**Goal:** Production-quality, documented, and proven to generalize beyond one chip.
+
+Scope: documentation, a second MCU family, and public launch.
+
+**Exit criteria:**
+- mdBook docs site published on GitHub Pages, including the firmware integration guide (enabling ITM in OpenOCD, the four lines of C).
+- STM32L476RG (NUCLEO-L476RG) supported end-to-end via `family = "STM32L476RG"`, validating that the database design generalizes.
+- CI runs `check` + `build` + `test` on every PR; CONTRIBUTING guide and issue templates in place.
+- Demo video recorded; public launch (Show HN, r/stm32, r/embedded, STM32/Embedded.fm Discords, Awesome Embedded).
 
 ---
 
@@ -440,9 +472,9 @@ ST periodically updates their HAL library. The generated `nucleus_init.c` calls 
 
 These are constraints to follow throughout development. Do not negotiate with them mid-project.
 
-1. **One MCU only for Phase 1 and 2.** NUCLEO-F446RE. Adding a second family is Phase 3 Week 11, not earlier.
-2. **No DMA collision detection until Phase 3.** Ship pin conflict detection first. DMA is complex and low perceived value early.
-3. **No clock tree solver until Phase 2.** Basic clock domain validation (is the bus enabled?) in Phase 1. Full PLL tree solving is a research problem on its own.
+1. **One MCU only through Phase 7.** NUCLEO-F446RE. Adding a second family is Phase 8, not earlier.
+2. **No DMA collision detection** through the published-toolchain milestone (Phase 7). Ship pin conflict detection first. DMA is complex and low perceived value early.
+3. **No full clock tree solver.** Basic clock-domain validation (is the bus enabled?) ships in Phase 2. Full PLL tree solving is a research problem on its own and is not scheduled.
 4. **No JetBrains / Neovim extension until after Marketplace launch.** The architecture supports it but build the VS Code extension first.
 5. **No cloud registry.** Nucleus is a local tool. No "upload your config to nucleus.dev" features. Keep the attack surface small.
 6. **The extension contains zero business logic.** If you're tempted to put constraint checking inside the TypeScript extension, don't. It belongs in the Rust CLI.
