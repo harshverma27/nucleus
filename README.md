@@ -327,6 +327,8 @@ Scope discipline is the biggest risk on this project. Each phase ships something
 
 ### Phase 1 — Constraint Database Foundation
 
+> **Status: ✅ Complete.** `nucleus-db` ships the byte-deterministic F446RE pin/AF/peripheral table with lookup APIs, generated at build time from the vendored pack data.
+
 **Goal:** Turn the vendored CMSIS F4 pack into an embedded, deterministic pin/AF/peripheral database for the STM32F446RE.
 
 Scope: `nucleus-db`. Parse the alternate-function tables (all GPIOs PA0–PC15, all AF0–AF15, peripheral-to-pin mappings), normalize inconsistent pack data, and embed the result at compile time (`build.rs` or `xtask`). Known pack errors go in a hand-maintained patch table.
@@ -341,14 +343,24 @@ Scope: `nucleus-db`. Parse the alternate-function tables (all GPIOs PA0–PC15, 
 
 ### Phase 2 — Config Parser + Constraint Solver
 
+> **Status: ✅ Complete.** `nucleus-compiler` parses `stm32.toml` and solves the four conflict classes; `nucleus check` surfaces them and exits non-zero on any error.
+
 **Goal:** Parse `stm32.toml` and catch every Phase-1-class conflict.
 
 Scope: `nucleus-compiler` parser + solver, surfaced via `nucleus check`. Conflict classes: pin collision, AF mismatch, missing required pins, clock domain disabled. No DMA collision detection; no full clock-tree solving (only "is the bus clock enabled?").
 
+Basic clock-domain checking reads an optional `[clocks]` section in `stm32.toml`; each bus (`ahb1`/`apb1`/`apb2`) defaults to enabled, so omitting the section never produces a false "clock disabled" error:
+
+```toml
+[clocks]
+apb1 = true
+apb2 = true
+```
+
 **Exit criteria:**
-- `nucleus check` reads `stm32.toml`, prints conflicts with pin names and descriptions, and exits non-zero on any error (so CI can gate on it).
-- All four conflict classes are detected and unit-tested.
-- Integration test: a `stm32.toml` with a deliberate PA5 collision produces exactly one error.
+- `nucleus check` reads `stm32.toml`, prints conflicts with pin names and descriptions, and exits non-zero on any error (so CI can gate on it). ✅
+- All four conflict classes are detected and unit-tested. ✅
+- Integration test: a `stm32.toml` with a deliberate PA5 collision produces exactly one error. ✅ (`tests/fixtures/pa5_collision.toml`, driven by `crates/nucleus-cli/tests/cli.rs`)
 
 ---
 
