@@ -1,0 +1,87 @@
+name: Release
+
+# Phase 7 (Distribution + Release Automation) skeleton.
+# Fires on a semver tag and builds cross-platform release artifacts. Binary
+# packaging and crate publishing activate once the `nucleus-cli` binary crate
+# exists; until then this builds + tests the workspace and drafts the release.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-latest,  target: aarch64-unknown-linux-gnu }
+          - { os: macos-latest,   target: x86_64-apple-darwin }
+          - { os: macos-latest,   target: aarch64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Build release
+        run: cargo build --workspace --release --target ${{ matrix.target }}
+
+      # Activates once crates/nucleus-cli produces a `nucleus` binary.
+      - name: Package binary
+        if: ${{ hashFiles(format('target/{0}/release/nucleus', matrix.target), format('target/{0}/release/nucleus.exe', matrix.target)) != '' }}
+        shell: bash
+        run: |
+          mkdir -p dist
+          bin="target/${{ matrix.target }}/release/nucleus"
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          cp "$bin" "dist/nucleus-${{ matrix.target }}$( [ -f "$bin.exe" ] && echo .exe )"
+
+      - name: Upload artifacts
+        if: ${{ hashFiles('dist/*') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nucleus-${{ matrix.target }}
+          path: dist/*
+
+  release:
+    name: publish github release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/*
+          fail_on_unmatched_files: false
+
+  # TODO(Phase 7): publish crates to crates.io once nucleus-cli is ready.
+  #   - cargo publish -p nucleus-db
+  #   - cargo publish -p nucleus-cli
+  # Requires the CARGO_REGISTRY_TOKEN secret.

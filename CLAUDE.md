@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Nucleus is currently **scaffolding only**. The `crates/`, `extension/`, `xtask/`, and `tests/` directories contain `README.md` placeholders describing intent — there is no `Cargo.toml`, no Rust source, and no TypeScript source yet. When asked to "build" or "run" something that doesn't exist, the task is usually to *create* it per the design in `README.md`, not to find existing code. Verify whether a crate/file actually exists before assuming.
+**Phase 1 has started.** The Cargo workspace exists with one real crate, `crates/nucleus-db` (pin/AF/peripheral model + lookup API, hand-verified F446RE seed data, unit-tested). The remaining crates (`nucleus-compiler`, `nucleus-cli`, `nucleus-lsp`, `nucleus-itm`, `nucleus-trace`), the `extension/`, and `xtask/` are still `README.md` placeholders — no source yet. When asked to "build" or "run" something that doesn't exist, the task is usually to *create* it per the design in `README.md`, not to find existing code. Verify whether a crate/file actually exists before assuming.
+
+The full CMSIS-pack AF-table parser (`nucleus-db/src/pack.rs`) is a documented stub: the vendored `cmsis-device-f4` pack carries only register headers, **not** the pin↔AF mux tables, so `nucleus-db` runs on a small hand-verified seed (`src/data.rs`) until a CMSIS Device Family Pack (with GPIO AF XML) is added. Completing the parser and widening coverage to all GPIOs is the remaining Phase 1 work.
 
 `README.md` (root) is the authoritative product spec and roadmap. Read it before doing design or implementation work — it defines the component boundaries, the `stm32.toml` format, the 8-phase roadmap (each phase gated by measurable exit criteria), and known hard problems. `tasks.txt` holds the current Week 1 task breakdown for the Phase 1 constraint database.
 
@@ -45,11 +47,15 @@ Multi-crate Cargo workspace. Each crate is independently testable; shared logic 
 
 ## Commands
 
-No build tooling exists yet. Once the workspace is created, the conventional commands will be:
+The `Makefile` is the task runner; `make` targets and CI run the identical checks.
 
-- Build: `cargo build` (workspace) / `cargo build -p <crate>`
-- Test: `cargo test` / `cargo test -p <crate>` / single test: `cargo test -p <crate> <test_name>`
-- DB/codegen helpers: `cargo xtask <command>`
-- Extension: `npm install` then `npm run build` (esbuild) inside `extension/`
+- Full local gate (run before pushing): `make check` (= `fmt-check` + `lint` + `test`)
+- Build: `make build` / `cargo build -p <crate>`
+- Test: `make test` / `cargo test -p <crate>` / single test: `cargo test -p <crate> <test_name>`
+- Format / lint: `make fmt` (apply) · `make fmt-check` · `make lint` (`clippy -D warnings`)
+- DB/codegen helpers (future): `cargo xtask <command>`
+- Extension (future): `npm install` then `npm run build` (esbuild) inside `extension/`
+
+CI lives in `.github/workflows/`: `ci.yml` runs the gate + a cross-platform build matrix on every PR; `release.yml` is the Phase 7 skeleton that builds cross-platform artifacts on a `v*` tag.
 
 The CLI surface (per README) is `nucleus init | check | build | flash | trace | lsp`. `nucleus check` must exit non-zero on any conflict so CI can gate on it.
