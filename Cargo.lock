@@ -144,6 +144,7 @@ version = "0.0.1"
 dependencies = [
  "clap",
  "nucleus-compiler",
+ "nucleus-db",
 ]
 
 [[package]]
