@@ -7,12 +7,14 @@
 //! Phase 2 ships the parser and the constraint solver (four conflict classes).
 //! HAL code generation lands in Phase 3.
 
+pub mod codegen;
 pub mod config;
 pub mod model;
 pub mod solver;
 
 use nucleus_db::Database;
 
+pub use codegen::{generate, Generated};
 pub use config::{Config, ParseError};
 pub use solver::Conflict;
 

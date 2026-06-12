@@ -1,16 +1,21 @@
 //! The `nucleus` command-line interface.
 //!
-//! Phase 2 implements `nucleus check`: parse and validate an `stm32.toml`
-//! against the constraint database, print any conflicts, and exit non-zero if
-//! the config is invalid so CI can gate on it. The remaining subcommands
-//! (`init`, `build`, `flash`, `trace`, `lsp`) are declared so the surface is
-//! stable, but land in later phases and currently exit with a clear notice.
+//! Phases 2–3 implement the config→firmware path: `check` validates an
+//! `stm32.toml`, `init` scaffolds a project, `build` generates HAL init code and
+//! drives the cross toolchain, and `flash` programs the board. The remaining
+//! subcommands (`trace`, `lsp`) are declared so the surface is stable but land
+//! in later phases.
+
+mod firmware;
+mod scaffold;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use nucleus_compiler::{check_family, ParseError};
+
+use scaffold::Written;
 
 /// CLI-first STM32 developer platform.
 #[derive(Parser)]
@@ -28,12 +33,24 @@ enum Command {
         #[arg(default_value = "stm32.toml")]
         path: PathBuf,
     },
-    /// Scaffold a new STM32 project. (Phase 3)
-    Init,
-    /// Build firmware (.elf/.bin) via CMake + arm-none-eabi-gcc. (Phase 3)
-    Build,
-    /// Flash the connected board. (Phase 3)
-    Flash,
+    /// Scaffold a new STM32 project (stm32.toml, CMake, main.c, CI workflow).
+    Init {
+        /// Directory to scaffold into (defaults to the current directory).
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+    /// Generate HAL init code and build firmware (.elf/.bin) via CMake.
+    Build {
+        /// Project root containing stm32.toml (defaults to the current directory).
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+    /// Flash the built firmware to a connected board with st-flash.
+    Flash {
+        /// Project root containing build/firmware.bin (defaults to current dir).
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
     /// Start the ITM trace daemon and dashboard. (Phase 5)
     Trace,
     /// Start the language server (used by the editor extension). (Phase 4)
@@ -44,9 +61,9 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Check { path } => run_check(&path),
-        Command::Init => not_yet("init", "Phase 3"),
-        Command::Build => not_yet("build", "Phase 3"),
-        Command::Flash => not_yet("flash", "Phase 3"),
+        Command::Init { path } => run_init(&path),
+        Command::Build { path } => firmware::build(&path),
+        Command::Flash { path } => firmware::flash(&path),
         Command::Trace => not_yet("trace", "Phase 5"),
         Command::Lsp => not_yet("lsp", "Phase 4"),
     }
@@ -55,6 +72,32 @@ fn main() -> ExitCode {
 fn not_yet(name: &str, phase: &str) -> ExitCode {
     eprintln!("nucleus {name}: not implemented yet (scheduled for {phase})");
     ExitCode::FAILURE
+}
+
+/// Scaffold a new project under `path`.
+fn run_init(path: &Path) -> ExitCode {
+    match scaffold::scaffold(path) {
+        Ok(results) => {
+            let mut created = 0;
+            for r in &results {
+                match r {
+                    Written::Created(p) => {
+                        println!("  created  {p}");
+                        created += 1;
+                    }
+                    Written::Skipped(p) => println!("  skipped  {p} (exists)"),
+                }
+            }
+            println!(
+                "\nScaffolded {created} file(s). Next: `nucleus check`, then `nucleus build`."
+            );
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("error: failed to scaffold project: {err}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Read, parse, and validate `path`, printing a human report. Exit code:

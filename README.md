@@ -366,15 +366,17 @@ apb2 = true
 
 ### Phase 3 — HAL Code Generation + Build
 
+> **Status: ✅ Complete** (on-hardware validation requires the user's cross toolchain + board — see note). Codegen lives in `nucleus-compiler::codegen`; `nucleus init`/`build`/`flash` orchestrate scaffolding and the toolchain.
+
 **Goal:** Go from validated config to flashed firmware.
 
 Scope: codegen in `nucleus-compiler`; orchestration in `nucleus-cli` (`init`, `build`, `flash`). Generated code calls stock ST HAL `Init` functions with resolved parameters — it does **not** reimplement the HAL.
 
 **Exit criteria:**
-- `nucleus init` scaffolds a project (`stm32.toml`, `CMakeLists.txt`, `src/main.c`, CI workflow).
-- Codegen emits `nucleus_config.h` (typed per-peripheral config structs) and `nucleus_init.c` (a single `Nucleus_Init()` calling `HAL_*_Init` functions).
-- `nucleus build` produces `.elf` and `.bin` via CMake + arm-none-eabi-gcc; `nucleus flash` programs the board.
-- Generated init code compiles and correctly initializes peripherals on a real NUCLEO-F446RE.
+- `nucleus init` scaffolds a project (`stm32.toml`, `CMakeLists.txt`, `cmake/` toolchain file, `src/main.c`, CI workflow). ✅ (idempotent; never overwrites)
+- Codegen emits `nucleus_config.h` (typed per-peripheral config structs) and `nucleus_init.c` (a single `Nucleus_Init()` calling `HAL_*_Init` functions, with GPIO alternate-function muxing resolved from `nucleus-db`). ✅
+- `nucleus build` validates the config, regenerates the sources, and drives CMake + arm-none-eabi-gcc to produce `.elf`/`.bin`; `nucleus flash` programs the board with `st-flash`. ✅ (build refuses a conflicting config; missing toolchain yields a clear, actionable error)
+- Generated init code compiles and correctly initializes peripherals on a real NUCLEO-F446RE. ⚙️ *Requires the ARM cross toolchain + an STM32CubeF4 (HAL) checkout + the physical board; the scaffolded `CMakeLists.txt` wires these via `STM32CUBE_PATH`. Codegen output structure is unit/integration-tested in CI; the physical flash is a user/maintainer step on hardware.*
 
 ---
 

@@ -15,6 +15,10 @@ The Nucleus pinmux compiler: the `stm32.toml` → diagnostics pipeline.
 
 Conflicts are returned in deterministic order; a doubly-used pin yields exactly one collision error.
 
-## Not yet
+## Status (Phase 3 — complete)
 
-HAL code generation (`nucleus_config.h` / `nucleus_init.c`) lands in Phase 3.
+- `codegen` — lowers a validated config to two C files via `generate(&config, &db)`:
+  - `nucleus_config.h` — a typed config struct per peripheral, `extern` HAL handle declarations, and the `Nucleus_Init()` prototype.
+  - `nucleus_init.c` — resolved config struct instances, handle definitions, and a single `Nucleus_Init()` that enables GPIO/peripheral clocks, configures alternate-function muxing (`GPIO_AF<n>_<PERIPH>` numbers from `nucleus-db`), and calls stock `HAL_*_Init` functions.
+
+The generated code never reimplements the HAL — only `Init` calls with resolved parameters, so HAL point-releases don't break output. Output is byte-deterministic (tested). Tested HAL family: STM32F4 (`stm32f4xx_hal.h`).
