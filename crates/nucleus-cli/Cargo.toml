@@ -7,16 +7,19 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+readme = "README.md"
+keywords = ["stm32", "embedded", "cli", "nucleo", "hal"]
+categories = ["embedded", "command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "nucleus"
 path = "src/main.rs"
 
 [dependencies]
-nucleus-compiler = { path = "../nucleus-compiler" }
-nucleus-db = { path = "../nucleus-db" }
-nucleus-lsp = { path = "../nucleus-lsp" }
-nucleus-trace = { path = "../nucleus-trace" }
+nucleus-compiler = { path = "../nucleus-compiler", version = "0.0.1" }
+nucleus-db = { path = "../nucleus-db", version = "0.0.1" }
+nucleus-lsp = { path = "../nucleus-lsp", version = "0.0.1" }
+nucleus-trace = { path = "../nucleus-trace", version = "0.0.1" }
 clap = { version = "4", features = ["derive"] }
 
 [lints]

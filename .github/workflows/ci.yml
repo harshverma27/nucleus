@@ -51,3 +51,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --workspace --release
+
+  extension:
+    name: extension typecheck + bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        working-directory: extension
+        run: npm ci
+      - name: Type-check
+        working-directory: extension
+        run: npm run typecheck
+      - name: Bundle
+        working-directory: extension
+        run: npm run build

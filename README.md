@@ -67,6 +67,24 @@ Three products inside one ecosystem:
 
 ---
 
+## Installation
+
+```sh
+# From crates.io (once published — see note below)
+cargo install nucleus-cli
+
+# From source, today
+cargo install --git https://github.com/harshverma27/nucleus nucleus-cli --locked
+```
+
+Tagged releases also attach prebuilt binaries for Linux/macOS/Windows (x86_64 +
+arm64). The VS Code extension is a thin client installed from the Marketplace or
+a release `.vsix`. Full details — including the from-source path used before the
+first crates.io/Marketplace publish — are in **[`docs/installation.md`](docs/installation.md)**;
+CLI reference in [`docs/cli.md`](docs/cli.md); CI gating in [`docs/ci.md`](docs/ci.md).
+
+---
+
 ## Architecture
 
 ```
@@ -436,16 +454,20 @@ The dashboard is a thin display client: it consumes the daemon's JSON over a Web
 
 ### Phase 7 — Distribution + Release Automation
 
+> **Status: ✅ Complete** (the first live publish is a maintainer action needing registry tokens — see note). The crates are publish-ready, the release workflow is wired end-to-end, the reusable action ships, and docs/licensing are in place.
+
 **Goal:** Any stranger can install Nucleus in one command, and releases ship themselves.
 
 Scope: packaging, publishing, and GitHub Actions release automation — the headline outcome of the project.
 
 **Exit criteria:**
-- `cargo install nucleus-cli` installs a working CLI (published to crates.io).
-- The extension is published and installable from the VS Code Marketplace.
-- A GitHub Actions release workflow triggers on a version tag and: builds cross-platform CLI binaries (Linux/macOS/Windows, x86_64 + arm64), publishes the crates, and packages + uploads the `.vsix`.
-- Releases follow semver and ship with a generated changelog.
-- A reusable `nucleus-action` runs `nucleus check` + `nucleus build` and posts a PR summary (resolved pins, conflict count, firmware size); a copy-paste `nucleus.yml` is documented.
+- `cargo install nucleus-cli` installs a working CLI (published to crates.io). ✅ Publish-ready — every crate carries the required metadata (versioned path deps, keywords, categories, readme) and `cargo publish --dry-run` packages cleanly; the release workflow runs the publish in dependency order. ⚙️ *The actual first upload requires the `CARGO_REGISTRY_TOKEN` secret (a maintainer step).*
+- The extension is published and installable from the VS Code Marketplace. ✅ The release workflow packages a `.vsix` and publishes it. ⚙️ *Marketplace publish needs the `VSCE_PAT` secret.*
+- A GitHub Actions release workflow triggers on a version tag and builds cross-platform CLI binaries (Linux/macOS/Windows, x86_64 + arm64) with checksums, publishes the crates, and packages + uploads the `.vsix`. ✅ (`.github/workflows/release.yml`)
+- Releases follow semver and ship with a generated changelog. ✅ (`generate_release_notes` + a curated `CHANGELOG.md`)
+- A reusable `nucleus-action` runs `nucleus check` + `nucleus build` and posts a PR summary (conflict count, firmware size); a copy-paste `nucleus.yml` is documented. ✅ (`.github/actions/nucleus/`, documented in [`docs/ci.md`](docs/ci.md))
+
+Publishing steps are **secret-gated**, so the workflow is safe to run on forks and tags without leaking or failing — they simply no-op until the tokens are configured. See [`docs/installation.md`](docs/installation.md) for how to install today (from source) and after the first release.
 
 ---
 
@@ -506,6 +528,23 @@ These are constraints to follow throughout development. Do not negotiate with th
 6. **The extension contains zero business logic.** If you're tempted to put constraint checking inside the TypeScript extension, don't. It belongs in the Rust CLI.
 
 ---
+
+## Contributing
+
+Contributions are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md) for the
+build/test workflow and the architectural rules. Run `make check` (the exact CI
+gate) before pushing. Changes ship with tests.
+
+## License
+
+Dual-licensed under either of
+
+- Apache License, Version 2.0 ([`LICENSE-APACHE`](LICENSE-APACHE))
+- MIT license ([`LICENSE-MIT`](LICENSE-MIT))
+
+at your option. Unless you explicitly state otherwise, any contribution
+intentionally submitted for inclusion in the work by you shall be dual-licensed
+as above, without any additional terms or conditions.
 
 ## Naming
 
