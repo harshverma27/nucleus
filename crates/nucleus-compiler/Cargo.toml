@@ -1,0 +1,17 @@
+[package]
+name = "nucleus-compiler"
+description = "Nucleus pinmux compiler: stm32.toml parsing, hardware constraint solving, and HAL codegen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+nucleus-db = { path = "../nucleus-db" }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[lints]
+workspace = true

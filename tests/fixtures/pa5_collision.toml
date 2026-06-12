@@ -1,0 +1,12 @@
+# Deliberate single conflict: PA5 is claimed by both SPI1_SCK and TIM2_CH1.
+# `nucleus check` must report exactly one error and exit non-zero.
+[device]
+family = "STM32F446RE"
+
+[peripherals.spi1]
+mosi = "PA7"
+miso = "PA6"
+sck = "PA5"
+
+[peripherals.tim2]
+channel1 = "PA5"
