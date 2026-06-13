@@ -132,6 +132,20 @@ impl Database {
         }
     }
 
+    /// The database for the NUCLEO-F411RE's STM32F411RE, generated at build
+    /// time from the vendored ST pin data (see [`pack`]).
+    pub const fn f411re() -> Database {
+        Database {
+            entries: data::F411RE,
+        }
+    }
+
+    /// Whether this device exposes `peripheral` at all (any AF mapping names it).
+    /// Used by the solver to flag peripherals absent on the selected family.
+    pub fn has_peripheral(&self, peripheral: &str) -> bool {
+        self.entries.iter().any(|m| m.peripheral == peripheral)
+    }
+
     /// Every mapping for `pin` at alternate function `af`.
     ///
     /// Returns an iterator because one (pin, AF) can carry several peripheral
