@@ -339,7 +339,7 @@ Scope discipline is the biggest risk on this project. Each phase ships something
 
 **The end product:** a polished, open-source STM32 toolchain a stranger can install in one command (`cargo install` + VS Code Marketplace), with GitHub Actions automating cross-platform releases. A published tool with real users is the goal.
 
-**Target hardware: NUCLEO-F446RE only** through Phase 7. A second MCU lands in Phase 8 to prove the design generalizes.
+**Target hardware: NUCLEO-F446RE only** through Phase 7. The NUCLEO-F411RE lands in Phase 8 to prove the design generalizes.
 
 ---
 
@@ -475,11 +475,11 @@ Publishing steps are **secret-gated**, so the workflow is safe to run on forks a
 
 **Goal:** Production-quality, documented, and proven to generalize beyond one chip.
 
-Scope: documentation, a second MCU family, and public launch.
+Scope: documentation, a second MCU family (STM32F411RE), and public launch.
 
 **Exit criteria:**
 - mdBook docs site published on GitHub Pages, including the firmware integration guide (enabling ITM in OpenOCD, the four lines of C).
-- STM32L476RG (NUCLEO-L476RG) supported end-to-end via `family = "STM32L476RG"`, validating that the database design generalizes.
+- STM32F411RE (NUCLEO-F411RE) supported end-to-end via `family = "STM32F411RE"` and `nucleus init --board NUCLEO-F411RE`, validating that the database design generalizes to a second MCU.
 - CI runs `check` + `build` + `test` on every PR; CONTRIBUTING guide and issue templates in place.
 - Demo video recorded; public launch (Show HN, r/stm32, r/embedded, STM32/Embedded.fm Discords, Awesome Embedded).
 

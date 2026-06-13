@@ -32,5 +32,6 @@ nucleus build     # generate HAL init code + build firmware
 nucleus trace     # decode ITM/SWO and stream to the dashboard
 ```
 
-Nucleus targets the **NUCLEO-F446RE** through Phase 7; a second MCU family
-(STM32L476RG) lands in Phase 8 to prove the design generalizes.
+Nucleus targets the **NUCLEO-F446RE** through Phase 7; the **NUCLEO-F411RE**
+(`STM32F411RE`) lands in Phase 8 as a second MCU family to prove the design
+generalizes.

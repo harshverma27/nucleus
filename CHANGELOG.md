@@ -11,6 +11,13 @@ notes. This file is the curated, human-readable history.
 ## [Unreleased]
 
 ### Added
+- **STM32F411RE support.** The NUCLEO-F411RE is a fully supported second board:
+  `family = "STM32F411RE"` validates against a dedicated constraint database
+  (generated from ST open pin data), `nucleus init --board NUCLEO-F411RE`
+  scaffolds an F411-specific project, and `nucleus build` generates HAL code for
+  it. A new `PeripheralUnavailable` conflict flags peripherals absent on the
+  selected family, and the LSP resolves diagnostics/hover against the document's
+  family. This fulfills the Phase 8 generality-proof criterion.
 - **Phase 7 — Distribution + Release Automation.** Crate metadata for
   publishing to crates.io (`cargo install nucleus-cli`); a release workflow that,
   on a `v*` tag, builds cross-platform CLI binaries (Linux/macOS/Windows,
