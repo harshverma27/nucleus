@@ -7,6 +7,8 @@ Nucleus replaces STM32CubeIDE/CubeMX's graphical pin configuration and
 proprietary debug tooling with a version-controllable, CI-friendly CLI and a
 thin VS Code extension.
 
+**[Watch the demo video](https://youtu.be/8zDZzE12wec)**
+
 ## At a glance
 
 ```toml

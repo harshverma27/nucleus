@@ -1,5 +1,7 @@
 # Nucleus
 
+![stm32.toml example](stm32.toml.png)
+
 > A modern STM32 developer platform for declarative hardware configuration and real-time trace debugging.
 
 **Not an IDE replacement. A developer platform.**
@@ -11,6 +13,8 @@ Nucleus solves the two real lock-ins keeping embedded developers on STM32CubeIDE
 Nucleus replaces both with a CLI-first, version-controllable, CI-friendly workflow that lives inside VS Code — or any editor.
 
 📖 **[Read the docs](https://heyharsh.me/nucleus/)**
+
+**[Watch the demo video](https://youtu.be/8zDZzE12wec)**
 
 ---
 
@@ -51,7 +55,7 @@ Every STM32 developer knows this workflow:
 5. Try to run it in CI — impossible without a full GUI install
 6. Debug with `printf` over UART because ITM tracing requires either a $600 Segger license or raw OpenOCD byte dumps nobody can read
 
-Nucleus fixes both of these with a 4 MB CLI and a VS Code extension.
+Nucleus replaces this entire workflow with a declarative `stm32.toml`, a CLI that validates and builds it, and a VS Code extension for live diagnostics and trace.
 
 ---
 
