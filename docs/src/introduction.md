@@ -1,15 +1,11 @@
-# Nucleus documentation
+# Introduction
 
 A CLI-first STM32 developer platform: declarative `stm32.toml` → validated HAL
 init code → flashed firmware, plus a real-time ITM trace dashboard.
 
-- **[Installation](installation.md)** — install the `nucleus` CLI and the VS Code extension.
-- **[CLI usage](cli.md)** — `check`, `init`, `build`, `flash`, `lsp`, `trace`.
-- **[CI integration](ci.md)** — gate PRs with `nucleus check` via the reusable action.
-
-> A full mdBook documentation site (published to GitHub Pages) and the firmware
-> integration guide land in Phase 8. These pages are the canonical reference
-> until then.
+Nucleus replaces STM32CubeIDE/CubeMX's graphical pin configuration and
+proprietary debug tooling with a version-controllable, CI-friendly CLI and a
+thin VS Code extension.
 
 ## At a glance
 
@@ -32,6 +28,18 @@ nucleus build     # generate HAL init code + build firmware
 nucleus trace     # decode ITM/SWO and stream to the dashboard
 ```
 
-Nucleus targets the **NUCLEO-F446RE** through Phase 7; the **NUCLEO-F411RE**
-(`STM32F411RE`) lands in Phase 8 as a second MCU family to prove the design
-generalizes.
+Nucleus supports two NUCLEO boards out of the box: **NUCLEO-F446RE**
+(`STM32F446RE`) and **NUCLEO-F411RE** (`STM32F411RE`) — pick one with
+`nucleus init --board <name>`.
+
+## What's in this book
+
+- **[Installation](installation.md)** — install the `nucleus` CLI and the VS
+  Code extension.
+- **[Quickstart: Blink an LED](quickstart.md)** — from a clean machine to a
+  blinking LED on a NUCLEO-F446RE.
+- **[CLI Usage](cli.md)** — `check`, `init`, `build`, `flash`, `lsp`, `trace`.
+- **[Enabling ITM Trace](itm-trace.md)** — wire up SWO/ITM in firmware and
+  OpenOCD for `nucleus trace`.
+- **[CI Integration](ci.md)** — gate PRs with `nucleus check` via the reusable
+  action.
