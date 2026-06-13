@@ -35,12 +35,13 @@ impl CheckReport {
     }
 }
 
-/// The database to validate against for `family`. Phase 2 supports exactly one
-/// MCU (the NUCLEO-F446RE); unknown families fall back to it with the family
-/// recorded in [`UnknownFamily`] so the CLI can warn.
-fn database_for(family: &str) -> Result<Database, UnknownFamily> {
+/// The database to validate against for `family`. Empty or `"STM32F446RE"`
+/// resolves to the F446RE; `"STM32F411RE"` to the F411RE. Any other value is an
+/// [`UnknownFamily`] error so the CLI/LSP can warn and fall back.
+pub fn database_for(family: &str) -> Result<Database, UnknownFamily> {
     match family {
         "STM32F446RE" | "" => Ok(Database::f446re()),
+        "STM32F411RE" => Ok(Database::f411re()),
         other => Err(UnknownFamily(other.to_string())),
     }
 }
@@ -53,7 +54,7 @@ impl std::fmt::Display for UnknownFamily {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "unsupported device family {:?}: Nucleus currently supports only STM32F446RE",
+            "unsupported device family {:?}: Nucleus supports STM32F446RE and STM32F411RE",
             self.0
         )
     }
@@ -79,7 +80,7 @@ pub fn check(text: &str) -> Result<CheckReport, ParseError> {
 pub fn check_family(text: &str) -> Result<(CheckReport, Option<UnknownFamily>), ParseError> {
     let config = config::parse(text)?;
     let family_warning = database_for(&config.device.family).err();
-    let db = Database::f446re();
+    let db = database_for(&config.device.family).unwrap_or_else(|_| Database::f446re());
     let conflicts = solver::solve(&config, &db);
     Ok((CheckReport { config, conflicts }, family_warning))
 }
@@ -136,5 +137,13 @@ family = "STM32H750"
     #[test]
     fn malformed_toml_is_a_parse_error() {
         assert!(check("this is not toml = = =").is_err());
+    }
+
+    #[test]
+    fn database_for_resolves_known_families() {
+        assert!(database_for("STM32F446RE").is_ok());
+        assert!(database_for("STM32F411RE").is_ok());
+        assert!(database_for("").is_ok()); // empty falls back to F446RE
+        assert!(database_for("STM32H750").is_err());
     }
 }
