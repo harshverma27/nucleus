@@ -25,12 +25,22 @@ mkdir blinky && cd blinky
 nucleus init .
 ```
 
+Use `--board` to target a specific NUCLEO board (default `NUCLEO-F446RE`):
+
+```sh
+nucleus init blinky --board NUCLEO-F411RE
+```
+
+Supported boards: `NUCLEO-F446RE`, `NUCLEO-F411RE`. The board sets the
+`[device].family`, the linker script, the MCU define, the startup file, and the
+default `clock_hz` in the scaffolded project.
+
 ## `nucleus check [path]`
 
-Validates `stm32.toml` (default `./stm32.toml`) against the F446RE constraint
-database and prints any conflicts. Detects pin collisions, AF mismatches,
-missing required pins, and disabled clock domains. **Exit code:** `0` when
-clean, `1` on any conflict or read/parse error.
+Validates `stm32.toml` (default `./stm32.toml`) against the constraint database
+for its `[device].family` (STM32F446RE or STM32F411RE) and prints any conflicts.
+Detects pin collisions, AF mismatches, missing required pins, and disabled clock
+domains. **Exit code:** `0` when clean, `1` on any conflict or read/parse error.
 
 ```sh
 nucleus check

@@ -50,6 +50,8 @@ pub enum Conflict {
     },
     /// A peripheral configured while its bus clock domain is disabled.
     ClockDomainDisabled { peripheral: String, bus: Bus },
+    /// A peripheral instance that does not exist on the selected MCU family.
+    PeripheralUnavailable { peripheral: String, family: String },
 }
 
 /// A `(peripheral, signal)` pair identifying one use of a pin.
@@ -106,6 +108,9 @@ impl fmt::Display for Conflict {
                 bus.name(),
                 bus.name().to_ascii_lowercase()
             ),
+            Conflict::PeripheralUnavailable { peripheral, family } => {
+                write!(f, "peripheral {peripheral} is not available on {family}")
+            }
         }
     }
 }
@@ -124,6 +129,17 @@ pub fn solve(config: &Config, db: &Database) -> Vec<Conflict> {
             continue;
         };
         let peripheral = model::peripheral_name(instance);
+
+        // A peripheral the selected family doesn't have at all: report once and
+        // skip pin/clock checks (which would otherwise emit confusing AF/missing
+        // errors for a nonexistent block).
+        if !db.has_peripheral(&peripheral) {
+            conflicts.push(Conflict::PeripheralUnavailable {
+                peripheral: peripheral.clone(),
+                family: config.device.family.clone(),
+            });
+            continue;
+        }
 
         // Clock-domain check: one diagnostic per peripheral, before pin work.
         if let Some(bus) = model::peripheral_bus(&peripheral) {
@@ -332,6 +348,26 @@ sck = "PA5"
                 Conflict::ClockDomainDisabled { peripheral, bus }
                     if peripheral == "SPI1" && *bus == Bus::Apb2
             )),
+            "got {conflicts:?}"
+        );
+    }
+
+    #[test]
+    fn detects_peripheral_unavailable_on_family() {
+        // UART4 exists on the F446 but not on the F411RE package. Configured
+        // under family = STM32F411RE it must produce exactly one
+        // PeripheralUnavailable conflict and no spurious pin conflicts.
+        let cfg = config::parse(
+            "[device]\nfamily = \"STM32F411RE\"\n\n[peripherals.uart4]\ntx = \"PA0\"\nrx = \"PA1\"\n",
+        )
+        .unwrap();
+        let conflicts = solve(&cfg, &Database::f411re());
+        assert_eq!(
+            conflicts,
+            vec![Conflict::PeripheralUnavailable {
+                peripheral: "UART4".to_string(),
+                family: "STM32F411RE".to_string(),
+            }],
             "got {conflicts:?}"
         );
     }

@@ -20,8 +20,13 @@ use tower_lsp::lsp_types::{
     HoverContents, MarkupContent, MarkupKind, Position, Range as LspRange,
 };
 
-fn db() -> Database {
-    Database::f446re()
+/// Resolve the constraint database for a document from its `[device].family`,
+/// falling back to the F446RE for unknown/missing families (mirrors `check`).
+fn db_for(text: &str) -> Database {
+    let family = nucleus_compiler::config::parse(text)
+        .map(|c| c.device.family)
+        .unwrap_or_default();
+    nucleus_compiler::database_for(&family).unwrap_or_else(|_| Database::f446re())
 }
 
 /// Maps byte offsets in the document to LSP [`Position`]s (UTF-16 columns).
@@ -175,7 +180,8 @@ fn conflict_spans(
             text,
         ),
         Conflict::MissingPin { peripheral, .. }
-        | Conflict::ClockDomainDisabled { peripheral, .. } => single(
+        | Conflict::ClockDomainDisabled { peripheral, .. }
+        | Conflict::PeripheralUnavailable { peripheral, .. } => single(
             name_to_key
                 .get(peripheral)
                 .and_then(|key| header_span(text, key)),
@@ -233,7 +239,7 @@ pub fn hover(text: &str, position: Position) -> Option<Hover> {
     let (token, span) = token_at(text, offset)?;
     let pin = Pin::from_str(&token).ok()?;
 
-    let db = db();
+    let db = db_for(text);
     let mut afs: Vec<_> = db.alt_functions(pin).collect();
     if afs.is_empty() {
         return None;
@@ -268,7 +274,7 @@ pub fn completion(text: &str, position: Position) -> Vec<CompletionItem> {
         return Vec::new();
     }
 
-    let db = db();
+    let db = db_for(text);
     db.pins()
         .into_iter()
         .map(|pin| {
@@ -340,6 +346,29 @@ mod tests {
     }
 
     const CONFLICT: &str = "[device]\nfamily = \"STM32F446RE\"\n\n[peripherals.spi1]\nmosi = \"PA7\"\nmiso = \"PA6\"\nsck = \"PA5\"\n\n[peripherals.tim2]\nchannel1 = \"PA5\"\n";
+
+    const F411_SPI4: &str = "[device]\nfamily = \"STM32F411RE\"\n\n[peripherals.spi4]\nmosi = \"PA1\"\nmiso = \"PA11\"\nsck = \"PB13\"\nnss = \"PB12\"\n";
+
+    #[test]
+    fn db_for_resolves_family_from_device_table() {
+        let f411 = db_for("[device]\nfamily = \"STM32F411RE\"\n");
+        let f446 = db_for("[device]\nfamily = \"STM32F446RE\"\n");
+        assert!(f411.has_peripheral("SPI4"));
+        assert!(!f411.has_peripheral("UART4"));
+        assert!(f446.has_peripheral("UART4"));
+    }
+
+    #[test]
+    fn hover_shows_family_specific_peripheral() {
+        // On the F411RE, PA1 AF5 is SPI4_MOSI (on the F446 PA1 is UART4_RX).
+        // Hover must reflect the document's family.
+        let h = hover(F411_SPI4, pos(4, 9)).expect("expected hover on PA1");
+        let HoverContents::Markup(m) = h.contents else {
+            panic!("expected markup hover");
+        };
+        assert!(m.value.contains("SPI4_MOSI"), "got: {}", m.value);
+        assert!(!m.value.contains("UART4"), "got F446 data: {}", m.value);
+    }
 
     #[test]
     fn clean_config_has_no_diagnostics() {

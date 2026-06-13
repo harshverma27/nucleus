@@ -207,8 +207,8 @@ fn generated_table_is_deterministic_filtered_and_sorted() {
     let mappings = pack::parse_gpio_modes(GPIO_MODES_FIXTURE).unwrap();
     let pins = vec!["PA7".to_string()]; // PA13 not in package -> filtered out
 
-    let a = pack::generate_table(&mappings, &pins);
-    let b = pack::generate_table(&mappings, &pins);
+    let a = pack::generate_table(&mappings, &pins, "TEST");
+    let b = pack::generate_table(&mappings, &pins, "TEST");
 
     assert_eq!(a, b, "generation must be byte-deterministic");
     assert!(
@@ -267,4 +267,65 @@ fn generated_db_covers_full_package() {
             .any(|m| (m.peripheral, m.signal) == ("SYS", "JTMS-SWDIO")),
         "PA13 AF0 should include SYS_JTMS-SWDIO"
     );
+}
+
+// --- STM32F411RE ----------------------------------------------------------
+
+#[test]
+fn f411re_seed_cross_validation() {
+    // Every datasheet-verified F411 seed entry must appear identically in the
+    // table generated from ST's pin data (cross-validation of sources).
+    let db = Database::f411re();
+    for seed in data::SEED_F411RE {
+        assert!(
+            db.lookup(seed.pin, seed.af)
+                .any(|m| (m.peripheral, m.signal) == (seed.peripheral, seed.signal)),
+            "F411 seed entry {} AF{} = {}_{} missing from generated DB",
+            seed.pin,
+            seed.af,
+            seed.peripheral,
+            seed.signal
+        );
+    }
+}
+
+#[test]
+fn f411re_covers_full_package() {
+    let db = Database::f411re();
+
+    let mut pins: Vec<Pin> = db.entries.iter().map(|m| m.pin).collect();
+    pins.sort();
+    pins.dedup();
+    assert!(
+        pins.len() >= 35,
+        "expected full-package coverage, got {} pins",
+        pins.len()
+    );
+    assert!(
+        db.entries.len() >= 150,
+        "expected >=150 mappings, got {}",
+        db.entries.len()
+    );
+
+    // Debug pin present.
+    let pa13 = "PA13".parse::<Pin>().unwrap();
+    assert!(
+        db.lookup(pa13, 0)
+            .any(|m| (m.peripheral, m.signal) == ("SYS", "JTMS-SWDIO")),
+        "PA13 AF0 should include SYS_JTMS-SWDIO"
+    );
+}
+
+#[test]
+fn has_peripheral_differs_by_family() {
+    let f411 = Database::f411re();
+    let f446 = Database::f446re();
+
+    // Shared peripheral present on both.
+    assert!(f411.has_peripheral("USART2"));
+    assert!(f446.has_peripheral("USART2"));
+
+    // UART4 exists on F446 but not on the F411RE package.
+    assert!(f446.has_peripheral("UART4"));
+    assert!(!f411.has_peripheral("UART4"));
 }
