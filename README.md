@@ -70,18 +70,19 @@ Three products inside one ecosystem:
 ## Installation
 
 ```sh
-# From crates.io (once published — see note below)
+# From crates.io
 cargo install nucleus-cli
 
-# From source, today
+# …or from source
 cargo install --git https://github.com/harshverma27/nucleus nucleus-cli --locked
 ```
 
 Tagged releases also attach prebuilt binaries for Linux/macOS/Windows (x86_64 +
 arm64). The VS Code extension is a thin client installed from the Marketplace or
-a release `.vsix`. Full details — including the from-source path used before the
-first crates.io/Marketplace publish — are in **[`docs/installation.md`](docs/installation.md)**;
-CLI reference in [`docs/cli.md`](docs/cli.md); CI gating in [`docs/ci.md`](docs/ci.md).
+a release `.vsix`. Full details are in the
+**[Installation guide](https://heyharsh.me/nucleus/installation.html)**;
+CLI reference in the [CLI Usage guide](https://heyharsh.me/nucleus/cli.html);
+CI gating in the [CI Integration guide](https://heyharsh.me/nucleus/ci.html).
 
 ---
 
@@ -465,9 +466,9 @@ Scope: packaging, publishing, and GitHub Actions release automation — the head
 - The extension is published and installable from the VS Code Marketplace. ✅ The release workflow packages a `.vsix` and publishes it. ⚙️ *Marketplace publish needs the `VSCE_PAT` secret.*
 - A GitHub Actions release workflow triggers on a version tag and builds cross-platform CLI binaries (Linux/macOS/Windows, x86_64 + arm64) with checksums, publishes the crates, and packages + uploads the `.vsix`. ✅ (`.github/workflows/release.yml`)
 - Releases follow semver and ship with a generated changelog. ✅ (`generate_release_notes` + a curated `CHANGELOG.md`)
-- A reusable `nucleus-action` runs `nucleus check` + `nucleus build` and posts a PR summary (conflict count, firmware size); a copy-paste `nucleus.yml` is documented. ✅ (`.github/actions/nucleus/`, documented in [`docs/ci.md`](docs/ci.md))
+- A reusable `nucleus-action` runs `nucleus check` + `nucleus build` and posts a PR summary (conflict count, firmware size); a copy-paste `nucleus.yml` is documented. ✅ (`.github/actions/nucleus/`, documented in the [CI Integration guide](https://heyharsh.me/nucleus/ci.html))
 
-Publishing steps are **secret-gated**, so the workflow is safe to run on forks and tags without leaking or failing — they simply no-op until the tokens are configured. See [`docs/installation.md`](docs/installation.md) for how to install today (from source) and after the first release.
+Publishing steps are **secret-gated**, so the workflow is safe to run on forks and tags without leaking or failing — they simply no-op until the tokens are configured. See the [Installation guide](https://heyharsh.me/nucleus/installation.html) for all the install options.
 
 ---
 

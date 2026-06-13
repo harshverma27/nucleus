@@ -52,8 +52,9 @@ jobs:
 The action also writes the summary to the workflow run's **Job Summary**, so it
 is visible even without comment permissions.
 
-> Before the first crates.io release, set `version: git` so the action builds
-> the CLI from this repository instead of crates.io.
+> `version` defaults to `*` (the latest crates.io release). Pin a specific
+> release (e.g. `version: 0.1.0`) for reproducible CI, or set `version: git` to
+> build the CLI from `main` instead of crates.io.
 
 ## Doing it by hand
 
