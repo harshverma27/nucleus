@@ -37,8 +37,6 @@ Nucleus replaces both with a CLI-first, version-controllable, CI-friendly workfl
   - [Phase 8 — Docs, Generality Proof + Community Launch](#phase-8--docs-generality-proof--community-launch)
 - [Known Hard Problems](#known-hard-problems)
 - [Scope Discipline Rules](#scope-discipline-rules)
-- [Naming](#naming)
-- [Resume Line](#resume-line)
 
 ---
 
@@ -554,19 +552,6 @@ at your option. Unless you explicitly state otherwise, any contribution
 intentionally submitted for inclusion in the work by you shall be dual-licensed
 as above, without any additional terms or conditions.
 
-## Naming
-
-"Nucleus" is memorable, short as a CLI command, and has the right systems-programming feel.
-
-**Before committing, check:**
-- `crates.io/crates/nucleus` — if taken, use `nucleus-stm32` or `nucleusstm32`
-- VS Code Marketplace search for "Nucleus"
-- GitHub organization name availability
-
-If the name is blocked, strong alternatives: `stforge`, `cubefree`, `pinsmith`, `tracenow`.
-
----
-
 ## Rust Workspace Structure
 
 ```
@@ -594,12 +579,6 @@ nucleus/
 │   └── integration/            # end-to-end tests against known conflict scenarios
 └── docs/                       # mdBook documentation source
 ```
-
----
-
-## Resume Line
-
-> *"Built Nucleus, an open source VS Code extension + Rust CLI for STM32 development — implements a hardware constraint solver with pin/AF conflict detection against STM32 CMSIS databases, an LSP server exposing live diagnostics in VS Code, and a real-time ARM CoreSight ITM packet decoder streaming structured telemetry to a React dashboard over WebSocket."*
 
 ---
 
