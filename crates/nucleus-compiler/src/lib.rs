@@ -146,4 +146,21 @@ family = "STM32H750"
         assert!(database_for("").is_ok()); // empty falls back to F446RE
         assert!(database_for("STM32H750").is_err());
     }
+
+    #[test]
+    fn check_family_resolves_db_for_f411re() {
+        // UART4 is absent on the F411RE; check_family must validate against the
+        // F411 DB (not the F446 fallback) and report it, with no family warning
+        // since STM32F411RE is a recognized family.
+        let (report, warning) = check_family(
+            "[device]\nfamily = \"STM32F411RE\"\n\n[peripherals.uart4]\ntx = \"PA0\"\nrx = \"PA1\"\n",
+        )
+        .unwrap();
+        assert_eq!(warning, None);
+        assert!(report.conflicts.iter().any(|c| matches!(
+            c,
+            Conflict::PeripheralUnavailable { peripheral, family }
+                if peripheral == "UART4" && family == "STM32F411RE"
+        )), "got {:?}", report.conflicts);
+    }
 }
