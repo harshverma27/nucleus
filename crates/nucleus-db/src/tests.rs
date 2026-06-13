@@ -207,8 +207,8 @@ fn generated_table_is_deterministic_filtered_and_sorted() {
     let mappings = pack::parse_gpio_modes(GPIO_MODES_FIXTURE).unwrap();
     let pins = vec!["PA7".to_string()]; // PA13 not in package -> filtered out
 
-    let a = pack::generate_table(&mappings, &pins);
-    let b = pack::generate_table(&mappings, &pins);
+    let a = pack::generate_table(&mappings, &pins, "TEST");
+    let b = pack::generate_table(&mappings, &pins, "TEST");
 
     assert_eq!(a, b, "generation must be byte-deterministic");
     assert!(
