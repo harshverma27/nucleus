@@ -3,6 +3,8 @@
 A CLI-first STM32 developer platform: declarative `stm32.toml` → validated HAL
 init code → flashed firmware, plus a real-time ITM trace dashboard.
 
+**[Watch the demo video](https://youtu.be/8zDZzE12wec)**
+
 - **[Installation](installation.md)** — install the `nucleus` CLI and the VS Code extension.
 - **[CLI usage](cli.md)** — `check`, `init`, `build`, `flash`, `lsp`, `trace`.
 - **[CI integration](ci.md)** — gate PRs with `nucleus check` via the reusable action.
