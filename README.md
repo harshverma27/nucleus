@@ -121,7 +121,7 @@ The backbone everything else builds on. Acts as `cargo` does for Rust projects.
 
 | Command | What it does |
 |---|---|
-| `nucleus init` | Scaffold a new STM32 project: `stm32.toml`, `CMakeLists.txt`, `src/main.c`, `.github/workflows/ci.yml` |
+| `nucleus init` | Scaffold a new STM32 project: `stm32.toml`, `CMakeLists.txt`, `src/main.c`, `.github/workflows/ci.yml`. Use `--board` to choose the target (`NUCLEO-F446RE` default, or `NUCLEO-F411RE`) |
 | `nucleus check` | Validate `stm32.toml` against the constraint database, print conflicts |
 | `nucleus build` | Run CMake + arm-none-eabi-gcc, emit firmware `.elf` and `.bin` |
 | `nucleus flash` | Invoke `st-flash` or OpenOCD to program the Nucleo board |
