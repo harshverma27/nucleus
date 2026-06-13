@@ -187,3 +187,83 @@ fn build_refuses_a_conflicting_config() {
     );
     assert!(!proj.path().join("src/generated/nucleus_init.c").exists());
 }
+
+// ---- Phase 8: F411RE support -----------------------------------------------
+
+#[test]
+fn f411re_fixture_passes_check() {
+    let out = run_check("f411re_clean.toml");
+    assert!(
+        out.status.success(),
+        "expected F411RE fixture to pass, stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn init_f411re_scaffolds_board_specific_files() {
+    let proj = TempProject::new();
+    let out = nucleus(&[
+        "init".as_ref(),
+        proj.path().as_os_str(),
+        "--board".as_ref(),
+        "NUCLEO-F411RE".as_ref(),
+    ]);
+    assert!(
+        out.status.success(),
+        "init --board failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // F411 linker script, not the F446 one.
+    assert!(proj.path().join("STM32F411RETx_FLASH.ld").exists());
+    assert!(!proj.path().join("STM32F446RETx_FLASH.ld").exists());
+
+    let toml = std::fs::read_to_string(proj.path().join("stm32.toml")).unwrap();
+    assert!(toml.contains("STM32F411RE"));
+    assert!(toml.contains("NUCLEO-F411RE"));
+
+    let cmake = std::fs::read_to_string(proj.path().join("CMakeLists.txt")).unwrap();
+    assert!(cmake.contains("STM32F411xE"));
+    assert!(cmake.contains("startup_stm32f411xe.s"));
+    assert!(cmake.contains("STM32F411RETx_FLASH.ld"));
+}
+
+#[test]
+fn init_f411re_project_passes_check_and_builds() {
+    let proj = TempProject::new();
+    assert!(nucleus(&[
+        "init".as_ref(),
+        proj.path().as_os_str(),
+        "--board".as_ref(),
+        "NUCLEO-F411RE".as_ref(),
+    ])
+    .status
+    .success());
+
+    // The scaffolded F411RE config validates against the F411 DB.
+    let toml = proj.path().join("stm32.toml");
+    assert!(nucleus(&["check".as_ref(), toml.as_os_str()])
+        .status
+        .success());
+
+    // Codegen runs (the cross-compile may fail without a toolchain).
+    let _ = nucleus(&["build".as_ref(), proj.path().as_os_str()]);
+    assert!(proj
+        .path()
+        .join("src/generated/nucleus_init.c")
+        .exists());
+}
+
+#[test]
+fn init_rejects_unknown_board() {
+    let proj = TempProject::new();
+    let out = nucleus(&[
+        "init".as_ref(),
+        proj.path().as_os_str(),
+        "--board".as_ref(),
+        "NUCLEO-H750".as_ref(),
+    ]);
+    assert!(!out.status.success(), "unknown board should exit non-zero");
+    assert!(!proj.path().join("stm32.toml").exists());
+}

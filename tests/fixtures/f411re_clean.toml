@@ -1,0 +1,20 @@
+# A conflict-free NUCLEO-F411RE configuration. `nucleus check` must accept this.
+[device]
+family = "STM32F411RE"
+board = "NUCLEO-F411RE"
+clock_hz = 100_000_000
+
+[peripherals.usart2]
+tx = "PA2"
+rx = "PA3"
+baud = 115200
+
+[peripherals.spi1]
+mosi = "PA7"
+miso = "PA6"
+sck = "PA5"
+nss = "PA4"
+
+[peripherals.i2c1]
+sda = "PB9"
+scl = "PB8"
