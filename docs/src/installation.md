@@ -8,17 +8,15 @@
 - Optional, only for `nucleus build` / `flash`: `arm-none-eabi-gcc`, `cmake`,
   `st-flash`, and a NUCLEO-F446RE board.
 
-### From crates.io (once published)
+### From crates.io
 
 ```sh
 cargo install nucleus-cli
 ```
 
 This installs the `nucleus` binary into `~/.cargo/bin` (on your `PATH` if you
-installed Rust via rustup).
-
-> **Status:** publishing to crates.io is automated by the release workflow and
-> activates on the first tagged release. Until then, install from source:
+installed Rust via rustup). To install a specific version, pass
+`--version <x.y.z>`.
 
 ### From source
 
