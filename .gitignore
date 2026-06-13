@@ -3,3 +3,6 @@
 
 # Local task notes
 tasks.txt
+
+# mdBook build output
+/docs/book

@@ -1,4 +1,4 @@
-# Demo: blink the on-board LED with Nucleus
+# Quickstart: Blink an LED
 
 This walks through setting up everything from scratch — toolchain, STM32
 HAL sources, the `nucleus` CLI — and ends with a blinking LED (`LD2`, pin

@@ -10,6 +10,8 @@ Nucleus solves the two real lock-ins keeping embedded developers on STM32CubeIDE
 
 Nucleus replaces both with a CLI-first, version-controllable, CI-friendly workflow that lives inside VS Code — or any editor.
 
+📖 **[Read the docs](https://heyharsh.me/nucleus/)**
+
 ---
 
 ## Table of Contents
@@ -472,6 +474,12 @@ Publishing steps are **secret-gated**, so the workflow is safe to run on forks a
 ---
 
 ### Phase 8 — Docs, Generality Proof + Community Launch
+
+> **Status: 🟡 In progress.** The mdBook docs site (published on GitHub
+> Pages, including the ITM/OpenOCD firmware integration guide) is live,
+> STM32F411RE (NUCLEO-F411RE) is supported end-to-end, CI gates `check` +
+> `build` + `test` on every PR, and CONTRIBUTING + issue templates are in
+> place. The demo video and public launch posts remain.
 
 **Goal:** Production-quality, documented, and proven to generalize beyond one chip.
 

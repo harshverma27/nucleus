@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions & discussion
+    url: https://github.com/harshverma27/nucleus/blob/main/CONTRIBUTING.md
+    about: Check CONTRIBUTING.md for the build/test workflow before opening an issue.
