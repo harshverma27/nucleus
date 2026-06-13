@@ -2,7 +2,7 @@
   "name": "nucleus-vscode",
   "displayName": "Nucleus",
   "description": "Live stm32.toml diagnostics, hover, pin completion, and a real-time ITM trace dashboard — a thin client for the nucleus CLI.",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "publisher": "harshverma27",
   "license": "MIT OR Apache-2.0",
   "repository": {

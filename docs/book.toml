@@ -1,0 +1,10 @@
+[book]
+title = "Nucleus"
+description = "A CLI-first STM32 developer platform"
+authors = ["Harsh Verma"]
+language = "en"
+src = "src"
+
+[output.html]
+git-repository-url = "https://github.com/harshverma27/nucleus"
+edit-url-template = "https://github.com/harshverma27/nucleus/edit/main/docs/{path}"

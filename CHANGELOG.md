@@ -10,6 +10,8 @@ notes. This file is the curated, human-readable history.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-06-13
+
 ### Added
 - **STM32F411RE support.** The NUCLEO-F411RE is a fully supported second board:
   `family = "STM32F411RE"` validates against a dedicated constraint database
@@ -18,6 +20,17 @@ notes. This file is the curated, human-readable history.
   it. A new `PeripheralUnavailable` conflict flags peripherals absent on the
   selected family, and the LSP resolves diagnostics/hover against the document's
   family. This fulfills the Phase 8 generality-proof criterion.
+- **mdBook docs site + issue templates.** The `docs/` directory is now an
+  mdBook source tree (Introduction, Installation, Quickstart, CLI Usage,
+  Enabling ITM Trace, CI Integration), built and published to GitHub Pages on
+  every push to `main` that touches `docs/`. The new "Enabling ITM Trace"
+  chapter covers the firmware-side CoreSight register setup and the matching
+  OpenOCD `tpiu`/`itm` commands. `.github/ISSUE_TEMPLATE/` adds structured bug
+  report and feature request forms.
+
+## [0.0.1] - 2026-06-13
+
+### Added
 - **Phase 7 — Distribution + Release Automation.** Crate metadata for
   publishing to crates.io (`cargo install nucleus-cli`); a release workflow that,
   on a `v*` tag, builds cross-platform CLI binaries (Linux/macOS/Windows,
@@ -47,4 +60,6 @@ These shipped on `main` ahead of the first tagged release:
 - **Phase 1 — Constraint Database Foundation.** `nucleus-db`, the deterministic
   F446RE pin/AF/peripheral table.
 
-[Unreleased]: https://github.com/harshverma27/nucleus/compare/main...HEAD
+[Unreleased]: https://github.com/harshverma27/nucleus/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/harshverma27/nucleus/compare/v0.0.1...v0.1.0
+[0.0.1]: https://github.com/harshverma27/nucleus/releases/tag/v0.0.1

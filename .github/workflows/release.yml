@@ -39,7 +39,7 @@ jobs:
           - { os: macos-latest,   target: aarch64-apple-darwin,      cross: false }
           - { os: windows-latest, target: x86_64-pc-windows-msvc,    cross: false }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -82,7 +82,7 @@ jobs:
           ( cd dist && certutil -hashfile "$name.zip" SHA256 > "$name.zip.sha256" )
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: binaries-${{ matrix.target }}
           path: |
@@ -95,8 +95,8 @@ jobs:
     name: package extension (.vsix)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
       - name: Build and package
@@ -106,7 +106,7 @@ jobs:
           npm run build
           npx --yes @vscode/vsce package -o "../nucleus-${GITHUB_REF_NAME}.vsix"
       - name: Upload .vsix artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: vsix
           path: "*.vsix"
@@ -124,7 +124,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: artifacts
           merge-multiple: true
@@ -143,7 +143,7 @@ jobs:
     env:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Publish crates in dependency order
