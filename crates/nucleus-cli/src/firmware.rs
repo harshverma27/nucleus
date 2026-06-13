@@ -50,7 +50,9 @@ pub fn generate_sources(root: &Path) -> Result<GeneratedPaths, ()> {
         return Err(());
     }
 
-    let generated = nucleus_compiler::generate(&report.config, &Database::f446re());
+    let db = nucleus_compiler::database_for(&report.config.device.family)
+        .unwrap_or_else(|_| Database::f446re());
+    let generated = nucleus_compiler::generate(&report.config, &db);
 
     let dir = root.join("src/generated");
     if let Err(err) = std::fs::create_dir_all(&dir) {
