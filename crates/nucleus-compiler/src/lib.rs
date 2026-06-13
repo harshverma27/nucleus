@@ -157,10 +157,14 @@ family = "STM32H750"
         )
         .unwrap();
         assert_eq!(warning, None);
-        assert!(report.conflicts.iter().any(|c| matches!(
-            c,
-            Conflict::PeripheralUnavailable { peripheral, family }
-                if peripheral == "UART4" && family == "STM32F411RE"
-        )), "got {:?}", report.conflicts);
+        assert!(
+            report.conflicts.iter().any(|c| matches!(
+                c,
+                Conflict::PeripheralUnavailable { peripheral, family }
+                    if peripheral == "UART4" && family == "STM32F411RE"
+            )),
+            "got {:?}",
+            report.conflicts
+        );
     }
 }

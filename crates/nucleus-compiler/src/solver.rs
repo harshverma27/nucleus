@@ -108,10 +108,9 @@ impl fmt::Display for Conflict {
                 bus.name(),
                 bus.name().to_ascii_lowercase()
             ),
-            Conflict::PeripheralUnavailable { peripheral, family } => write!(
-                f,
-                "peripheral {peripheral} is not available on {family}"
-            ),
+            Conflict::PeripheralUnavailable { peripheral, family } => {
+                write!(f, "peripheral {peripheral} is not available on {family}")
+            }
         }
     }
 }

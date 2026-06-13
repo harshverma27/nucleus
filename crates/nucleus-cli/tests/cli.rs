@@ -249,10 +249,7 @@ fn init_f411re_project_passes_check_and_builds() {
 
     // Codegen runs (the cross-compile may fail without a toolchain).
     let _ = nucleus(&["build".as_ref(), proj.path().as_os_str()]);
-    assert!(proj
-        .path()
-        .join("src/generated/nucleus_init.c")
-        .exists());
+    assert!(proj.path().join("src/generated/nucleus_init.c").exists());
 }
 
 #[test]
