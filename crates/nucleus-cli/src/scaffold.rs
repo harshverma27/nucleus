@@ -9,55 +9,128 @@
 
 use std::path::Path;
 
-/// One file the scaffolder can emit: a path relative to the project root and
-/// its contents.
-struct Template {
-    path: &'static str,
-    contents: &'static str,
+/// Everything that varies between supported boards. Drives the scaffold
+/// templates via [`render`].
+pub struct BoardProfile {
+    pub family: &'static str,
+    pub board: &'static str,
+    pub mcu_define: &'static str,
+    pub startup_asm: &'static str,
+    pub mcu_part: &'static str,
+    pub linker_filename: &'static str,
+    pub clock_hz: u32,
 }
 
-const TEMPLATES: &[Template] = &[
-    Template {
-        path: "stm32.toml",
-        contents: STM32_TOML,
-    },
-    Template {
-        path: "CMakeLists.txt",
-        contents: CMAKELISTS,
-    },
-    Template {
-        path: "cmake/arm-none-eabi-gcc.cmake",
-        contents: TOOLCHAIN_CMAKE,
-    },
-    Template {
-        path: "STM32F446RETx_FLASH.ld",
-        contents: LINKER_SCRIPT,
-    },
-    Template {
-        path: "src/main.c",
-        contents: MAIN_C,
-    },
-    Template {
-        path: "src/stm32f4xx_hal_conf.h",
-        contents: HAL_CONF_H,
-    },
-    Template {
-        path: "src/stm32f4xx_it.h",
-        contents: STM32F4XX_IT_H,
-    },
-    Template {
-        path: "src/stm32f4xx_it.c",
-        contents: STM32F4XX_IT_C,
-    },
-    Template {
-        path: ".github/workflows/ci.yml",
-        contents: CI_YML,
-    },
-    Template {
-        path: ".gitignore",
-        contents: GITIGNORE,
-    },
-];
+impl BoardProfile {
+    pub const F446RE: BoardProfile = BoardProfile {
+        family: "STM32F446RE",
+        board: "NUCLEO-F446RE",
+        mcu_define: "STM32F446xx",
+        startup_asm: "startup_stm32f446xx.s",
+        mcu_part: "STM32F446RETx",
+        linker_filename: "STM32F446RETx_FLASH.ld",
+        clock_hz: 180_000_000,
+    };
+
+    pub const F411RE: BoardProfile = BoardProfile {
+        family: "STM32F411RE",
+        board: "NUCLEO-F411RE",
+        mcu_define: "STM32F411xE",
+        startup_asm: "startup_stm32f411xe.s",
+        mcu_part: "STM32F411RETx",
+        linker_filename: "STM32F411RETx_FLASH.ld",
+        clock_hz: 100_000_000,
+    };
+
+    /// Resolve a `--board` value (case-insensitive) to a profile.
+    pub fn from_board_name(name: &str) -> Option<BoardProfile> {
+        match name.to_ascii_uppercase().as_str() {
+            "NUCLEO-F446RE" => Some(BoardProfile::F446RE),
+            "NUCLEO-F411RE" => Some(BoardProfile::F411RE),
+            _ => None,
+        }
+    }
+}
+
+/// Substitute the board-specific placeholders in a template. Uses `.replace`
+/// rather than `format!` so the CMake/C template bodies can keep their literal
+/// `{`/`}` braces unescaped.
+fn render(template: &str, profile: &BoardProfile) -> String {
+    template
+        .replace("@FAMILY@", profile.family)
+        .replace("@BOARD@", profile.board)
+        .replace("@CLOCK_HZ@", &format_clock(profile.clock_hz))
+        .replace("@LINKER_FILENAME@", profile.linker_filename)
+        .replace("@LINKER_TARGET@", profile.mcu_part)
+        .replace("@MCU_DEFINE@", profile.mcu_define)
+        .replace("@STARTUP_ASM@", profile.startup_asm)
+}
+
+/// Render a clock in Hz with `_` digit separators, e.g. `180_000_000`.
+fn format_clock(hz: u32) -> String {
+    let digits = hz.to_string();
+    let mut out = String::new();
+    let bytes = digits.as_bytes();
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 && (bytes.len() - i) % 3 == 0 {
+            out.push('_');
+        }
+        out.push(*b as char);
+    }
+    out
+}
+
+/// One file the scaffolder can emit: a path relative to the project root and
+/// its rendered contents.
+struct Template {
+    path: String,
+    contents: String,
+}
+
+fn templates(profile: &BoardProfile) -> Vec<Template> {
+    vec![
+        Template {
+            path: "stm32.toml".to_string(),
+            contents: render(STM32_TOML, profile),
+        },
+        Template {
+            path: "CMakeLists.txt".to_string(),
+            contents: render(CMAKELISTS, profile),
+        },
+        Template {
+            path: "cmake/arm-none-eabi-gcc.cmake".to_string(),
+            contents: TOOLCHAIN_CMAKE.to_string(),
+        },
+        Template {
+            path: profile.linker_filename.to_string(),
+            contents: render(LINKER_SCRIPT, profile),
+        },
+        Template {
+            path: "src/main.c".to_string(),
+            contents: MAIN_C.to_string(),
+        },
+        Template {
+            path: "src/stm32f4xx_hal_conf.h".to_string(),
+            contents: render(HAL_CONF_H, profile),
+        },
+        Template {
+            path: "src/stm32f4xx_it.h".to_string(),
+            contents: STM32F4XX_IT_H.to_string(),
+        },
+        Template {
+            path: "src/stm32f4xx_it.c".to_string(),
+            contents: STM32F4XX_IT_C.to_string(),
+        },
+        Template {
+            path: ".github/workflows/ci.yml".to_string(),
+            contents: CI_YML.to_string(),
+        },
+        Template {
+            path: ".gitignore".to_string(),
+            contents: GITIGNORE.to_string(),
+        },
+    ]
+}
 
 /// Outcome of scaffolding one file.
 pub enum Written {
@@ -65,36 +138,37 @@ pub enum Written {
     Skipped(String),
 }
 
-/// Scaffold a project under `root`, creating missing files and skipping any
-/// that already exist. Returns one [`Written`] per template.
-pub fn scaffold(root: &Path) -> std::io::Result<Vec<Written>> {
-    let mut results = Vec::with_capacity(TEMPLATES.len());
-    for tpl in TEMPLATES {
-        let dest = root.join(tpl.path);
+/// Scaffold a project under `root` for `profile`, creating missing files and
+/// skipping any that already exist. Returns one [`Written`] per template.
+pub fn scaffold(root: &Path, profile: &BoardProfile) -> std::io::Result<Vec<Written>> {
+    let templates = templates(profile);
+    let mut results = Vec::with_capacity(templates.len());
+    for tpl in &templates {
+        let dest = root.join(&tpl.path);
         if dest.exists() {
-            results.push(Written::Skipped(tpl.path.to_string()));
+            results.push(Written::Skipped(tpl.path.clone()));
             continue;
         }
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&dest, tpl.contents)?;
-        results.push(Written::Created(tpl.path.to_string()));
+        std::fs::write(&dest, &tpl.contents)?;
+        results.push(Written::Created(tpl.path.clone()));
     }
     Ok(results)
 }
 
 const STM32_TOML: &str = r#"# Nucleus project configuration. Validate with `nucleus check`.
 [device]
-family   = "STM32F446RE"
-board    = "NUCLEO-F446RE"
-clock_hz = 180_000_000
+family   = "@FAMILY@"
+board    = "@BOARD@"
+clock_hz = @CLOCK_HZ@
 
 [build]
 toolchain    = "arm-none-eabi-gcc"
 optimization = "Os"
 
-[peripherals.usart2]   # ST-Link virtual COM port on the NUCLEO-F446RE
+[peripherals.usart2]   # ST-Link virtual COM port on the @BOARD@
 tx   = "PA2"
 rx   = "PA3"
 baud = 115200
@@ -138,11 +212,11 @@ set(CMSIS_TEMPLATES ${STM32CUBE_PATH}/Drivers/CMSIS/Device/ST/STM32F4xx/Source/T
 set(MCU_FLAGS -mcpu=cortex-m4 -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb)
 add_compile_options(${MCU_FLAGS} -ffunction-sections -fdata-sections -Wall)
 add_link_options(${MCU_FLAGS} -Wl,--gc-sections -specs=nano.specs -specs=nosys.specs
-    -T${CMAKE_CURRENT_SOURCE_DIR}/STM32F446RETx_FLASH.ld
+    -T${CMAKE_CURRENT_SOURCE_DIR}/@LINKER_FILENAME@
     -Wl,-Map=firmware.map
 )
 
-add_compile_definitions(STM32F446xx USE_HAL_DRIVER)
+add_compile_definitions(@MCU_DEFINE@ USE_HAL_DRIVER)
 
 add_executable(firmware
     src/main.c
@@ -150,7 +224,7 @@ add_executable(firmware
     src/generated/nucleus_init.c
 
     # CMSIS startup + system init
-    ${CMSIS_TEMPLATES}/gcc/startup_stm32f446xx.s
+    ${CMSIS_TEMPLATES}/gcc/@STARTUP_ASM@
     ${CMSIS_TEMPLATES}/system_stm32f4xx.c
 
     # HAL driver core + the peripheral families Nucleus supports
@@ -190,7 +264,7 @@ add_custom_command(TARGET firmware POST_BUILD
 )
 "#;
 
-const LINKER_SCRIPT: &str = r#"/* Linker script for STM32F446RETx: 512K flash, 128K RAM. */
+const LINKER_SCRIPT: &str = r#"/* Linker script for @LINKER_TARGET@: 512K flash, 128K RAM. */
 ENTRY(Reset_Handler)
 
 _estack = ORIGIN(RAM) + LENGTH(RAM);
@@ -311,7 +385,7 @@ SECTIONS
 "#;
 
 const HAL_CONF_H: &str = r#"/* HAL configuration. Hand-written — selects the HAL modules Nucleus uses
- * and the board's oscillator values (NUCLEO-F446RE: 8 MHz HSE from ST-Link). */
+ * and the board's oscillator values (@BOARD@: 8 MHz HSE from ST-Link). */
 #ifndef NUCLEUS_HAL_CONF_H
 #define NUCLEUS_HAL_CONF_H
 
@@ -495,3 +569,45 @@ jobs:
 "#;
 
 const GITIGNORE: &str = "/build/\n/src/generated/\n*.elf\n*.bin\n*.hex\n*.map\n";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_board_name_is_case_insensitive() {
+        assert_eq!(
+            BoardProfile::from_board_name("nucleo-f411re").map(|p| p.family),
+            Some("STM32F411RE")
+        );
+        assert_eq!(
+            BoardProfile::from_board_name("NUCLEO-F446RE").map(|p| p.family),
+            Some("STM32F446RE")
+        );
+        assert!(BoardProfile::from_board_name("NUCLEO-H750").is_none());
+    }
+
+    #[test]
+    fn f411_profile_renders_its_own_mcu_values() {
+        let toml = render(STM32_TOML, &BoardProfile::F411RE);
+        assert!(toml.contains("family   = \"STM32F411RE\""));
+        assert!(toml.contains("board    = \"NUCLEO-F411RE\""));
+        assert!(toml.contains("100_000_000"));
+
+        let cmake = render(CMAKELISTS, &BoardProfile::F411RE);
+        assert!(cmake.contains("STM32F411RETx_FLASH.ld"));
+        assert!(cmake.contains("STM32F411xE"));
+        assert!(cmake.contains("startup_stm32f411xe.s"));
+        assert!(!cmake.contains("STM32F446"));
+    }
+
+    #[test]
+    fn f446_profile_preserves_existing_output() {
+        let toml = render(STM32_TOML, &BoardProfile::F446RE);
+        assert!(toml.contains("family   = \"STM32F446RE\""));
+        assert!(toml.contains("180_000_000"));
+        let cmake = render(CMAKELISTS, &BoardProfile::F446RE);
+        assert!(cmake.contains("STM32F446RETx_FLASH.ld"));
+        assert!(cmake.contains("STM32F446xx"));
+    }
+}

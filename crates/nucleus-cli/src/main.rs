@@ -37,6 +37,9 @@ enum Command {
         /// Directory to scaffold into (defaults to the current directory).
         #[arg(default_value = ".")]
         path: PathBuf,
+        /// Target board: NUCLEO-F446RE (default) or NUCLEO-F411RE.
+        #[arg(long)]
+        board: Option<String>,
     },
     /// Generate HAL init code and build firmware (.elf/.bin) via CMake.
     Build {
@@ -76,7 +79,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Check { path } => run_check(&path),
-        Command::Init { path } => run_init(&path),
+        Command::Init { path, board } => run_init(&path, board.as_deref()),
         Command::Build { path } => firmware::build(&path),
         Command::Flash { path } => firmware::flash(&path),
         Command::Trace {
@@ -165,9 +168,21 @@ fn run_lsp() -> ExitCode {
     }
 }
 
-/// Scaffold a new project under `path`.
-fn run_init(path: &Path) -> ExitCode {
-    match scaffold::scaffold(path) {
+/// Scaffold a new project under `path` for the chosen board.
+fn run_init(path: &Path, board: Option<&str>) -> ExitCode {
+    let profile = match board {
+        None => scaffold::BoardProfile::F446RE,
+        Some(name) => match scaffold::BoardProfile::from_board_name(name) {
+            Some(p) => p,
+            None => {
+                eprintln!("error: unknown board {name:?}");
+                eprintln!("       supported: NUCLEO-F446RE, NUCLEO-F411RE");
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+
+    match scaffold::scaffold(path, &profile) {
         Ok(results) => {
             let mut created = 0;
             for r in &results {
@@ -180,7 +195,8 @@ fn run_init(path: &Path) -> ExitCode {
                 }
             }
             println!(
-                "\nScaffolded {created} file(s). Next: `nucleus check`, then `nucleus build`."
+                "\nScaffolded {created} file(s) for {}. Next: `nucleus check`, then `nucleus build`.",
+                profile.board
             );
             ExitCode::SUCCESS
         }
@@ -212,7 +228,7 @@ fn run_check(path: &Path) -> ExitCode {
 
     if let Some(warning) = &family_warning {
         eprintln!("warning: {warning}");
-        eprintln!("         validating against STM32F446RE; results may be inaccurate.\n");
+        eprintln!("         falling back to STM32F446RE; results may be inaccurate.\n");
     }
 
     if report.is_ok() {
