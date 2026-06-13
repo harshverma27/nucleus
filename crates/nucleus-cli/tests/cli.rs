@@ -111,7 +111,11 @@ fn init_scaffolds_a_buildable_project() {
         "stm32.toml",
         "CMakeLists.txt",
         "cmake/arm-none-eabi-gcc.cmake",
+        "STM32F446RETx_FLASH.ld",
         "src/main.c",
+        "src/stm32f4xx_hal_conf.h",
+        "src/stm32f4xx_it.h",
+        "src/stm32f4xx_it.c",
         ".github/workflows/ci.yml",
     ] {
         assert!(proj.path().join(f).exists(), "missing scaffolded file {f}");
