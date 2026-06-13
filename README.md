@@ -10,7 +10,7 @@ Nucleus solves the two real lock-ins keeping embedded developers on STM32CubeIDE
 
 Nucleus replaces both with a CLI-first, version-controllable, CI-friendly workflow that lives inside VS Code — or any editor.
 
-📖 **[Read the docs](https://harshverma27.github.io/nucleus/)**
+📖 **[Read the docs](https://heyharsh.me/nucleus/)**
 
 ---
 
