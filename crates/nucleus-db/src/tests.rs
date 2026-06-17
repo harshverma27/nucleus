@@ -603,3 +603,99 @@ fn dma_direction_resolves_spi_signal_aliases() {
     assert_eq!(Direction::from_signal("RX"), Some(Direction::Rx));
     assert_eq!(Direction::from_signal("SCK"), None);
 }
+
+// --- IRQ/NVIC vector map model (M3) ---------------------------------------
+//
+// Like the clock tree and DMA request map, the IRQ vector map has no pack
+// source to cross-validate against, so the oracle is the reference manual
+// itself: every vector below is hand-typed from RM0390 (F446, §10.1.2 Table
+// 38) and RM0383 (F411, §10.1.2 vector table), and the model must agree
+// with it.
+
+use irq::{ExtiGroups, IrqMap};
+
+#[test]
+fn irq_map_f446_matches_rm0390_seed() {
+    let m = IrqMap::f446re();
+
+    // RM0390 Table 38: USART1/2/3, UART4/5, USART6 each have one vector
+    // sharing their own name.
+    assert_eq!(m.vectors("USART1"), &["USART1"]);
+    assert_eq!(m.vectors("UART4"), &["UART4"]);
+    assert_eq!(m.vectors("UART5"), &["UART5"]);
+    assert_eq!(m.vectors("USART6"), &["USART6"]);
+
+    // SPI1-4 each have one vector.
+    assert_eq!(m.vectors("SPI1"), &["SPI1"]);
+    assert_eq!(m.vectors("SPI4"), &["SPI4"]);
+
+    // I2Cx has two vectors: event and error.
+    assert_eq!(m.vectors("I2C1"), &["I2C1_EV", "I2C1_ER"]);
+    assert_eq!(m.vectors("I2C3"), &["I2C3_EV", "I2C3_ER"]);
+
+    // TIM2-5 each have one vector.
+    assert_eq!(m.vectors("TIM2"), &["TIM2"]);
+    assert_eq!(m.vectors("TIM5"), &["TIM5"]);
+
+    assert!(m.has_peripheral("USART3"));
+    assert!(m.has_peripheral("UART5"));
+    // Unmodeled peripheral yields no vectors (never a false positive).
+    assert!(m.vectors("MADEUP").is_empty());
+}
+
+#[test]
+fn irq_map_f411_matches_rm0383_seed() {
+    let m = IrqMap::f411re();
+
+    // Shared peripherals keep the F446 vector names.
+    assert_eq!(m.vectors("USART1"), &["USART1"]);
+    assert_eq!(m.vectors("USART2"), &["USART2"]);
+    assert_eq!(m.vectors("USART6"), &["USART6"]);
+    assert_eq!(m.vectors("I2C2"), &["I2C2_EV", "I2C2_ER"]);
+    assert_eq!(m.vectors("TIM3"), &["TIM3"]);
+
+    // The F411 package omits USART3 and UART4/5 — no IRQ rows for them
+    // (mirrors the same omission in the DMA and clock-tree models).
+    assert!(!m.has_peripheral("USART3"));
+    assert!(!m.has_peripheral("UART4"));
+    assert!(!m.has_peripheral("UART5"));
+    assert!(m.vectors("UART5").is_empty());
+}
+
+#[test]
+fn irq_vector_map_differs_by_family() {
+    let f446 = IrqMap::f446re();
+    let f411 = IrqMap::f411re();
+
+    // Shared peripheral present on both with identical vectors.
+    assert!(f446.has_peripheral("SPI1") && f411.has_peripheral("SPI1"));
+    assert_eq!(f446.vectors("SPI1"), f411.vectors("SPI1"));
+
+    // UART5 exists only on the F446.
+    assert!(f446.has_peripheral("UART5"));
+    assert!(!f411.has_peripheral("UART5"));
+}
+
+#[test]
+fn exti_group_boundaries_are_correct() {
+    // Lines 0-4 are individually vectored.
+    assert_eq!(irq::group_for(0), "EXTI0");
+    assert_eq!(irq::group_for(4), "EXTI4");
+    // Lines 5-9 share EXTI9_5.
+    assert_eq!(irq::group_for(5), "EXTI9_5");
+    assert_eq!(irq::group_for(9), "EXTI9_5");
+    // Lines 10-15 share EXTI15_10.
+    assert_eq!(irq::group_for(10), "EXTI15_10");
+    assert_eq!(irq::group_for(15), "EXTI15_10");
+}
+
+#[test]
+fn exti_groups_identical_across_families() {
+    // The EXTI/NVIC layout is identical on both families (same RM0390/RM0383
+    // vector table), so ExtiGroups should agree for every line.
+    let f446 = ExtiGroups::f446re();
+    let f411 = ExtiGroups::f411re();
+    for line in 0..=15u8 {
+        assert_eq!(f446.group_for(line), f411.group_for(line));
+    }
+}
