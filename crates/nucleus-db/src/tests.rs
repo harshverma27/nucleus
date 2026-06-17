@@ -329,3 +329,134 @@ fn has_peripheral_differs_by_family() {
     assert!(f446.has_peripheral("UART4"));
     assert!(!f411.has_peripheral("UART4"));
 }
+
+// --- Clock-tree model (M1) -----------------------------------------------
+//
+// The clock tree has no pack source to cross-validate against, so the oracle is
+// the reference manual itself: every value below is typed by hand from RM0390
+// (F446) / RM0383 (F411) and the model must agree with it.
+
+use clock::{Bus, ClockTree, Oscillator, SysclkSource};
+
+#[test]
+fn clock_tree_f446_matches_rm0390_seed() {
+    let ct = ClockTree::f446re();
+
+    // Oscillators (RM0390 §6.2): HSI 16 MHz, LSI 32 kHz, LSE 32.768 kHz,
+    // HSE nominal 8 MHz with the 4–26 MHz crystal range.
+    assert_eq!(
+        ct.oscillator(Oscillator::Hsi).unwrap().nominal_hz,
+        16_000_000
+    );
+    assert_eq!(ct.oscillator(Oscillator::Lsi).unwrap().nominal_hz, 32_000);
+    assert_eq!(ct.oscillator(Oscillator::Lse).unwrap().nominal_hz, 32_768);
+    let hse = ct.oscillator(Oscillator::Hse).unwrap();
+    assert_eq!(hse.nominal_hz, 8_000_000);
+    assert_eq!(
+        (hse.range.min_hz, hse.range.max_hz),
+        (4_000_000, 26_000_000)
+    );
+
+    // Main PLL (RM0390 §6.3.2): M 2..=63, N 50..=432, P {2,4,6,8}, Q 2..=15,
+    // VCO_in 1–2 MHz, VCO_out 100–432 MHz.
+    let pll = ct.pll();
+    assert_eq!((pll.m.min, pll.m.max), (2, 63));
+    assert_eq!((pll.n.min, pll.n.max), (50, 432));
+    assert_eq!(pll.p, &[2, 4, 6, 8]);
+    assert_eq!((pll.q.min, pll.q.max), (2, 15));
+    assert_eq!(
+        (pll.vco_in.min_hz, pll.vco_in.max_hz),
+        (1_000_000, 2_000_000)
+    );
+    assert_eq!(
+        (pll.vco_out.min_hz, pll.vco_out.max_hz),
+        (100_000_000, 432_000_000)
+    );
+
+    // Bus limits (RM0390 §6.2).
+    let lim = ct.limits();
+    assert_eq!(lim.max_sysclk_hz, 180_000_000);
+    assert_eq!(lim.max_ahb_hz, 180_000_000);
+    assert_eq!(lim.max_apb1_hz, 45_000_000);
+    assert_eq!(lim.max_apb2_hz, 90_000_000);
+
+    // Prescaler sets (RM0390 §6.3.3).
+    assert_eq!(ct.ahb_prescalers(), &[1, 2, 4, 8, 16, 64, 128, 256, 512]);
+    assert_eq!(ct.prescalers(Bus::Apb1), &[1, 2, 4, 8, 16]);
+    assert_eq!(ct.prescalers(Bus::Apb2), &[1, 2, 4, 8, 16]);
+
+    // Peripheral bus derivation mirrors the compiler's model.
+    assert_eq!(ct.peripheral_bus("USART2"), Some(Bus::Apb1));
+    assert_eq!(ct.peripheral_bus("SPI1"), Some(Bus::Apb2));
+    assert_eq!(ct.peripheral_bus("UART4"), Some(Bus::Apb1));
+    assert_eq!(ct.peripheral_bus("MADEUP"), None);
+}
+
+#[test]
+fn clock_tree_f411_matches_rm0383_seed() {
+    let ct = ClockTree::f411re();
+
+    // Oscillators identical to the F446 NUCLEO board.
+    assert_eq!(
+        ct.oscillator(Oscillator::Hsi).unwrap().nominal_hz,
+        16_000_000
+    );
+    assert_eq!(
+        ct.oscillator(Oscillator::Hse).unwrap().nominal_hz,
+        8_000_000
+    );
+
+    // Main PLL (RM0383 §6.3.2): same divider ranges as the F446.
+    let pll = ct.pll();
+    assert_eq!((pll.m.min, pll.m.max), (2, 63));
+    assert_eq!((pll.n.min, pll.n.max), (50, 432));
+    assert_eq!(
+        (pll.vco_out.min_hz, pll.vco_out.max_hz),
+        (100_000_000, 432_000_000)
+    );
+
+    // Bus limits (RM0383 §6.2) — lower than the F446.
+    let lim = ct.limits();
+    assert_eq!(lim.max_sysclk_hz, 100_000_000);
+    assert_eq!(lim.max_ahb_hz, 100_000_000);
+    assert_eq!(lim.max_apb1_hz, 50_000_000);
+    assert_eq!(lim.max_apb2_hz, 100_000_000);
+
+    // The F411 package omits UART4/5 and USART3.
+    assert_eq!(ct.peripheral_bus("USART2"), Some(Bus::Apb1));
+    assert_eq!(ct.peripheral_bus("SPI1"), Some(Bus::Apb2));
+    assert_eq!(ct.peripheral_bus("UART4"), None);
+    assert_eq!(ct.peripheral_bus("USART3"), None);
+}
+
+#[test]
+fn silicon_limits_differ_by_family() {
+    // The headline family difference: the F446 runs to 180 MHz, the F411 to 100.
+    let f446 = ClockTree::f446re().limits();
+    let f411 = ClockTree::f411re().limits();
+    assert!(f446.max_sysclk_hz > f411.max_sysclk_hz);
+    assert_eq!(f446.max_apb1_hz, 45_000_000);
+    assert_eq!(f411.max_apb1_hz, 50_000_000);
+    assert_ne!(f446.max_apb2_hz, f411.max_apb2_hz);
+}
+
+#[test]
+fn apbx_timer_x2_rule() {
+    // Timers run at the APB clock when the prescaler is 1, doubled otherwise
+    // (RM0390/RM0383 §6.2). The AHB bus has no doubling rule.
+    assert_eq!(ClockTree::timer_multiplier(Bus::Apb1, 1), 1);
+    assert_eq!(ClockTree::timer_multiplier(Bus::Apb1, 2), 2);
+    assert_eq!(ClockTree::timer_multiplier(Bus::Apb2, 4), 2);
+    assert_eq!(ClockTree::timer_multiplier(Bus::Apb2, 1), 1);
+    assert_eq!(ClockTree::timer_multiplier(Bus::Ahb1, 8), 1);
+}
+
+#[test]
+fn sysclk_sources_present() {
+    for ct in [ClockTree::f446re(), ClockTree::f411re()] {
+        let srcs = ct.sysclk_sources();
+        assert!(srcs.contains(&SysclkSource::Pll));
+        assert!(srcs.contains(&SysclkSource::Hse));
+        assert!(srcs.contains(&SysclkSource::Hsi));
+    }
+}
