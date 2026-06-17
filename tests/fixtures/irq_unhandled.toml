@@ -1,0 +1,14 @@
+# USART3 doesn't exist on the F411 at all (absent from both
+# nucleus_db::irq::IrqMap::f411re() and the F411 pin/AF database), so this
+# fixture deliberately produces two independent conflicts: the solver's main
+# loop flags Conflict::PeripheralUnavailable (USART3 isn't in the pin/AF db),
+# and irq::validate() separately flags Conflict::IrqConflict (USART3 isn't in
+# the F411 IrqMap either). Both are correct, expected output from two
+# independent passes over the same config.
+[device]
+family = "STM32F411RE"
+
+[peripherals.usart3]
+tx = "PB10"
+rx = "PB11"
+irq = true

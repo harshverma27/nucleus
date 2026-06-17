@@ -96,6 +96,49 @@ fn dma_collision_exits_nonzero_with_suggestion() {
 }
 
 #[test]
+fn exti_collision_exits_nonzero() {
+    // M3 exit criterion at the CLI boundary: two [[exti]] entries (PA0, PB0)
+    // both claim EXTI line 0 -> exactly one error naming both pins.
+    let out = run_check("exti_collision.toml");
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit on EXTI collision"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let error_lines = stderr.lines().filter(|l| l.contains("error:")).count();
+    assert_eq!(
+        error_lines, 1,
+        "expected exactly one error, got stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("PA0") && stderr.contains("PB0"),
+        "error should name both colliding pins, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn irq_unhandled_exits_nonzero() {
+    // M3 exit criterion at the CLI boundary: USART3 doesn't exist on the
+    // F411 at all, so this legitimately produces two independent conflicts
+    // (PeripheralUnavailable from the pin/AF pass, IrqConflict from
+    // irq::validate()'s own pass over `irq = true`). Unlike the
+    // single-conflict fixtures above, we don't assert an exact error count
+    // here — just that the IRQ-specific conflict fired and named USART3.
+    let out = run_check("irq_unhandled.toml");
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit on unhandled IRQ"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("IRQ conflict") && stderr.contains("USART3"),
+        "error should name an IRQ conflict on USART3, got:\n{stderr}"
+    );
+}
+
+#[test]
 fn priority_inversion_exits_zero_with_warning() {
     // M3 severity exit criterion at the CLI boundary: a warning-only conflict
     // (dma_priority > irq_priority on the same peripheral) still exits 0, but

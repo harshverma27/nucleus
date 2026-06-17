@@ -1,0 +1,12 @@
+# Two [[exti]] entries whose pin numbers both land on EXTI line 0: PA0 and
+# PB0. EXTI lines are shared across all eight GPIO ports, so only one pin per
+# line can actually trigger that line's vector — CubeMX lets you wire both,
+# nucleus catches the contention.
+[device]
+family = "STM32F446RE"
+
+[[exti]]
+pin = "PA0"
+
+[[exti]]
+pin = "PB0"
