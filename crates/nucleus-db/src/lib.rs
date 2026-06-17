@@ -10,6 +10,7 @@
 use std::fmt;
 use std::str::FromStr;
 
+pub mod clock;
 mod data;
 pub mod pack;
 
