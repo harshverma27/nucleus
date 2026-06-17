@@ -49,6 +49,28 @@ fn pa5_collision_exits_nonzero_with_exactly_one_error() {
 }
 
 #[test]
+fn overclocked_apb1_exits_nonzero_with_clock_constraint() {
+    // M1 exit criterion at the CLI boundary: a clock misconfiguration CubeMX
+    // accepts is caught, with exactly one error and no spurious conflicts.
+    let out = run_check("overclock_apb1.toml");
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit on over-clock"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let error_lines = stderr.lines().filter(|l| l.contains("error:")).count();
+    assert_eq!(
+        error_lines, 1,
+        "expected exactly one error, got stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("APB1") && stderr.contains("clock constraint") && stderr.contains("45 MHz"),
+        "error should name the over-clocked bus, got:\n{stderr}"
+    );
+}
+
+#[test]
 fn missing_file_exits_nonzero() {
     let out = Command::new(env!("CARGO_BIN_EXE_nucleus"))
         .arg("check")
