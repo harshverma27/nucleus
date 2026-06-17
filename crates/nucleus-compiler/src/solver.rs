@@ -52,6 +52,16 @@ pub enum Conflict {
     ClockDomainDisabled { peripheral: String, bus: Bus },
     /// A peripheral instance that does not exist on the selected MCU family.
     PeripheralUnavailable { peripheral: String, family: String },
+    /// A clock-tree constraint violation: an over-clocked bus, a PLL VCO/divider
+    /// out of range, an invalid prescaler, or an unreachable peripheral rate.
+    /// Fatal — gates codegen and the HIL runner like any other conflict.
+    ClockConstraint {
+        /// The offending clock-tree node (`"SYSCLK"`, `"AHB"`, `"APB1"`, `"PLL"`,
+        /// or a peripheral instance name). Used for span mapping and dedup.
+        node: String,
+        /// Human-readable explanation; also the `Display` body.
+        reason: String,
+    },
 }
 
 /// A `(peripheral, signal)` pair identifying one use of a pin.
@@ -110,6 +120,9 @@ impl fmt::Display for Conflict {
             ),
             Conflict::PeripheralUnavailable { peripheral, family } => {
                 write!(f, "peripheral {peripheral} is not available on {family}")
+            }
+            Conflict::ClockConstraint { node, reason } => {
+                write!(f, "clock constraint [{node}]: {reason}")
             }
         }
     }
@@ -204,6 +217,11 @@ pub fn solve(config: &Config, db: &Database) -> Vec<Conflict> {
             conflicts.push(Conflict::PinCollision { pin, users });
         }
     }
+
+    // Clock-tree validation (M1) runs last, so clock conflicts sort after the
+    // pin/AF/domain conflicts in the deterministic order.
+    let tree = crate::clock_tree_for(&config.device.family);
+    conflicts.extend(crate::clocks::validate(config, &tree));
 
     conflicts
 }

@@ -71,8 +71,13 @@ impl Peripheral {
     }
 }
 
-/// The `[clocks]` section. Each field defaults to `true` (enabled) so that an
-/// omitted field never produces a false "clock disabled" error.
+/// The `[clocks]` section.
+///
+/// The boolean bus fields default to `true` (enabled) so an omitted field never
+/// produces a false "clock disabled" error. The clock-tree fields (PLL dividers,
+/// prescalers, source selection) are all `Option`: when absent, the M1 solver
+/// substitutes the family's known-good NUCLEO power-on configuration, so a config
+/// that omits `[clocks]` entirely validates clean.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Clocks {
@@ -82,6 +87,27 @@ pub struct Clocks {
     pub apb1: bool,
     #[serde(default = "enabled")]
     pub apb2: bool,
+
+    /// SYSCLK source: `"hsi"`, `"hse"`, or `"pll"`. Default `"pll"`.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Oscillator feeding the PLL: `"hsi"` or `"hse"`. Default `"hse"`.
+    #[serde(default)]
+    pub pll_source: Option<String>,
+    #[serde(default)]
+    pub pll_m: Option<u32>,
+    #[serde(default)]
+    pub pll_n: Option<u32>,
+    #[serde(default)]
+    pub pll_p: Option<u32>,
+    #[serde(default)]
+    pub pll_q: Option<u32>,
+    #[serde(default)]
+    pub ahb_prescaler: Option<u32>,
+    #[serde(default)]
+    pub apb1_prescaler: Option<u32>,
+    #[serde(default)]
+    pub apb2_prescaler: Option<u32>,
 }
 
 fn enabled() -> bool {
@@ -94,6 +120,15 @@ impl Default for Clocks {
             ahb1: true,
             apb1: true,
             apb2: true,
+            source: None,
+            pll_source: None,
+            pll_m: None,
+            pll_n: None,
+            pll_p: None,
+            pll_q: None,
+            ahb_prescaler: None,
+            apb1_prescaler: None,
+            apb2_prescaler: None,
         }
     }
 }
