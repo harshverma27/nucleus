@@ -14,6 +14,7 @@ use std::str::FromStr;
 
 use nucleus_compiler::check_family;
 use nucleus_compiler::solver::Conflict;
+use nucleus_compiler::Severity;
 use nucleus_db::{Database, Pin};
 use tower_lsp::lsp_types::{
     CompletionItem, CompletionItemKind, Diagnostic, DiagnosticSeverity, Documentation, Hover,
@@ -117,17 +118,33 @@ pub fn diagnostics(text: &str) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     for conflict in &report.conflicts {
         let message = conflict.to_string();
+        let severity = lsp_severity(conflict.severity());
         for span in conflict_spans(text, conflict, &name_to_key) {
-            out.push(error(li.range(span), message.clone()));
+            out.push(diagnostic(li.range(span), severity, message.clone()));
         }
     }
     out
 }
 
+/// Maps a solver [`Severity`] to the LSP severity it should render as.
+/// Every conflict predating M3 is [`Severity::Error`] (unchanged behavior);
+/// M3's [`Conflict::IrqConflict`] is the first to ever produce
+/// [`DiagnosticSeverity::WARNING`] here.
+fn lsp_severity(severity: Severity) -> DiagnosticSeverity {
+    match severity {
+        Severity::Error => DiagnosticSeverity::ERROR,
+        Severity::Warning => DiagnosticSeverity::WARNING,
+    }
+}
+
 fn error(range: LspRange, message: String) -> Diagnostic {
+    diagnostic(range, DiagnosticSeverity::ERROR, message)
+}
+
+fn diagnostic(range: LspRange, severity: DiagnosticSeverity, message: String) -> Diagnostic {
     Diagnostic {
         range,
-        severity: Some(DiagnosticSeverity::ERROR),
+        severity: Some(severity),
         source: Some("nucleus".to_string()),
         message,
         ..Diagnostic::default()
@@ -212,7 +229,7 @@ fn conflict_spans(
             name_to_key
                 .get(node)
                 .and_then(|key| header_span(text, key))
-                .or_else(|| find_quoted(text, 0..text.len(), node)),
+                .or_else(|| find_pin_anywhere(text, node)),
             text,
         ),
     }
@@ -264,6 +281,14 @@ fn find_quoted(text: &str, region: Range<usize>, value: &str) -> Option<Range<us
         }
     }
     None
+}
+
+/// The span of `pin_str` (e.g. `"PA0"`) where it appears quoted anywhere in
+/// the document — the fallback used when a conflict's node is a pin string
+/// rather than a peripheral name with a table to underline (e.g. an EXTI
+/// collision's quoted `pin = "PA0"` value).
+fn find_pin_anywhere(text: &str, pin_str: &str) -> Option<Range<usize>> {
+    find_quoted(text, 0..text.len(), pin_str)
 }
 
 /// Hover for the pin name under the cursor: its full alternate-function table.
@@ -463,6 +488,59 @@ mod tests {
             .unwrap();
         assert!(
             src_line.contains("[peripherals.i2c1]"),
+            "underlined: {src_line}"
+        );
+    }
+
+    #[test]
+    fn unhandled_irq_underlines_peripheral_table() {
+        // TIM9 has no modeled NVIC vector on the F446 — `irq = true` on it is
+        // an unhandled-IRQ conflict, fatal (ERROR). All TIM roles are
+        // optional, so an otherwise-empty table produces no pin conflicts.
+        let text = "[device]\nfamily = \"STM32F446RE\"\n\n[peripherals.tim9]\nirq = true\n";
+        let diags = diagnostics(text);
+        assert_eq!(diags.len(), 1, "got {diags:?}");
+        assert_eq!(diags[0].severity, Some(DiagnosticSeverity::ERROR));
+        assert!(diags[0].message.contains("IRQ conflict"), "{:?}", diags[0]);
+        let src_line = text
+            .lines()
+            .nth(diags[0].range.start.line as usize)
+            .unwrap();
+        assert!(
+            src_line.contains("[peripherals.tim9]"),
+            "underlined: {src_line}"
+        );
+    }
+
+    #[test]
+    fn exti_collision_underlines_first_pin() {
+        // PA0 and PB0 both claim EXTI line 0.
+        let text =
+            "[device]\nfamily = \"STM32F446RE\"\n\n[[exti]]\npin = \"PA0\"\n\n[[exti]]\npin = \"PB0\"\n";
+        let diags = diagnostics(text);
+        assert_eq!(diags.len(), 1, "got {diags:?}");
+        assert_eq!(diags[0].severity, Some(DiagnosticSeverity::ERROR));
+        assert!(diags[0].message.contains("IRQ conflict"), "{:?}", diags[0]);
+        let src_line = text
+            .lines()
+            .nth(diags[0].range.start.line as usize)
+            .unwrap();
+        assert!(src_line.contains("PA0"), "underlined: {src_line}");
+    }
+
+    #[test]
+    fn priority_inversion_is_a_warning() {
+        let text = "[device]\nfamily = \"STM32F446RE\"\n\n[peripherals.usart2]\ntx = \"PA2\"\nrx = \"PA3\"\ndma = true\ndma_priority = 5\nirq_priority = 1\n";
+        let diags = diagnostics(text);
+        assert_eq!(diags.len(), 1, "got {diags:?}");
+        assert_eq!(diags[0].severity, Some(DiagnosticSeverity::WARNING));
+        assert!(diags[0].message.contains("IRQ conflict"), "{:?}", diags[0]);
+        let src_line = text
+            .lines()
+            .nth(diags[0].range.start.line as usize)
+            .unwrap();
+        assert!(
+            src_line.contains("[peripherals.usart2]"),
             "underlined: {src_line}"
         );
     }
