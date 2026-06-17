@@ -12,6 +12,7 @@ use std::str::FromStr;
 
 pub mod clock;
 mod data;
+pub mod dma;
 pub mod pack;
 
 /// A GPIO port on the device.
