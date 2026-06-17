@@ -295,9 +295,13 @@ pub fn solve(config: &Config, db: &Database) -> Vec<Conflict> {
     let tree = crate::clock_tree_for(&config.device.family);
     conflicts.extend(crate::clocks::validate(config, &tree));
 
-    // DMA arbitration (M2) runs last.
+    // DMA arbitration (M2) runs after the clock-tree validation.
     let dma_map = crate::dma_map_for(&config.device.family);
     conflicts.extend(crate::dma::validate(config, &dma_map));
+
+    // IRQ/NVIC verification (M3) runs last.
+    let irq_map = crate::irq_map_for(&config.device.family);
+    conflicts.extend(crate::irq::validate(config, &irq_map));
 
     conflicts
 }

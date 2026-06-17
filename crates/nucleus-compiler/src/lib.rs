@@ -11,11 +11,13 @@ pub mod clocks;
 pub mod codegen;
 pub mod config;
 pub mod dma;
+pub mod irq;
 pub mod model;
 pub mod solver;
 
 use nucleus_db::clock::ClockTree;
 use nucleus_db::dma::DmaMap;
+use nucleus_db::irq::IrqMap;
 use nucleus_db::Database;
 
 pub use clocks::{PeripheralFreq, ResolvedClocks};
@@ -67,6 +69,15 @@ pub fn dma_map_for(family: &str) -> DmaMap {
     match family {
         "STM32F411RE" => DmaMap::f411re(),
         _ => DmaMap::f446re(),
+    }
+}
+
+/// The IRQ/NVIC model to validate against for `family`, mirroring
+/// [`dma_map_for`]. Unknown families fall back to the F446RE.
+pub fn irq_map_for(family: &str) -> IrqMap {
+    match family {
+        "STM32F411RE" => IrqMap::f411re(),
+        _ => IrqMap::f446re(),
     }
 }
 
