@@ -71,6 +71,31 @@ fn overclocked_apb1_exits_nonzero_with_clock_constraint() {
 }
 
 #[test]
+fn dma_collision_exits_nonzero_with_suggestion() {
+    // M2 exit criterion at the CLI boundary: two peripherals contending one DMA
+    // stream → exactly one error naming both, with a proposed free alternative.
+    let out = run_check("dma_collision.toml");
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit on DMA collision"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let error_lines = stderr.lines().filter(|l| l.contains("error:")).count();
+    assert_eq!(
+        error_lines, 1,
+        "expected exactly one error, got stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("DMA collision")
+            && stderr.contains("I2C1")
+            && stderr.contains("UART5")
+            && stderr.contains("move I2C1"),
+        "error should name both peripherals and a suggestion, got:\n{stderr}"
+    );
+}
+
+#[test]
 fn missing_file_exits_nonzero() {
     let out = Command::new(env!("CARGO_BIN_EXE_nucleus"))
         .arg("check")

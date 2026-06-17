@@ -197,6 +197,13 @@ fn conflict_spans(
                 .or_else(|| clocks_header_span(text)),
             text,
         ),
+        // A DMA collision underlines the first contender's table header.
+        Conflict::DmaCollision { first, .. } => single(
+            name_to_key
+                .get(first)
+                .and_then(|key| header_span(text, key)),
+            text,
+        ),
     }
 }
 
@@ -431,6 +438,22 @@ mod tests {
             .nth(diags[0].range.start.line as usize)
             .unwrap();
         assert!(src_line.contains("[clocks]"), "underlined: {src_line}");
+    }
+
+    #[test]
+    fn dma_collision_underlines_first_peripheral_table() {
+        let text = "[device]\nfamily = \"STM32F446RE\"\n\n[peripherals.i2c1]\nsda = \"PB7\"\nscl = \"PB6\"\ndma = [\"rx\"]\n\n[peripherals.uart5]\ntx = \"PC12\"\nrx = \"PD2\"\ndma = [\"rx\"]\n";
+        let diags = diagnostics(text);
+        assert_eq!(diags.len(), 1, "got {diags:?}");
+        assert!(diags[0].message.contains("DMA collision"));
+        let src_line = text
+            .lines()
+            .nth(diags[0].range.start.line as usize)
+            .unwrap();
+        assert!(
+            src_line.contains("[peripherals.i2c1]"),
+            "underlined: {src_line}"
+        );
     }
 
     #[test]

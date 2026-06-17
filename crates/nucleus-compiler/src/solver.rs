@@ -62,6 +62,21 @@ pub enum Conflict {
         /// Human-readable explanation; also the `Display` body.
         reason: String,
     },
+    /// Two peripherals contending for the same DMA stream. Reported once per
+    /// contested stream (not per pair), fatal like every conflict.
+    DmaCollision {
+        /// The peripheral already holding the contested stream.
+        first: String,
+        /// The peripheral that could not be placed.
+        second: String,
+        /// The contested controller, e.g. `"DMA1"`.
+        controller: String,
+        /// The contested stream number.
+        stream: u8,
+        /// An optional `(peripheral, slot label)` suggestion: a free alternative
+        /// slot one of the contenders could move to.
+        suggestion: Option<(String, String)>,
+    },
 }
 
 /// A `(peripheral, signal)` pair identifying one use of a pin.
@@ -123,6 +138,22 @@ impl fmt::Display for Conflict {
             }
             Conflict::ClockConstraint { node, reason } => {
                 write!(f, "clock constraint [{node}]: {reason}")
+            }
+            Conflict::DmaCollision {
+                first,
+                second,
+                controller,
+                stream,
+                suggestion,
+            } => {
+                write!(
+                    f,
+                    "DMA collision: {first} and {second} both need {controller} stream {stream}"
+                )?;
+                if let Some((peripheral, slot)) = suggestion {
+                    write!(f, " (move {peripheral} to {slot})")?;
+                }
+                Ok(())
             }
         }
     }
@@ -218,10 +249,14 @@ pub fn solve(config: &Config, db: &Database) -> Vec<Conflict> {
         }
     }
 
-    // Clock-tree validation (M1) runs last, so clock conflicts sort after the
-    // pin/AF/domain conflicts in the deterministic order.
+    // Clock-tree validation (M1) runs after the pin/AF/domain conflicts in the
+    // deterministic order.
     let tree = crate::clock_tree_for(&config.device.family);
     conflicts.extend(crate::clocks::validate(config, &tree));
+
+    // DMA arbitration (M2) runs last.
+    let dma_map = crate::dma_map_for(&config.device.family);
+    conflicts.extend(crate::dma::validate(config, &dma_map));
 
     conflicts
 }

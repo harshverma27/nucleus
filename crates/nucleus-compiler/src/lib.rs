@@ -10,10 +10,12 @@
 pub mod clocks;
 pub mod codegen;
 pub mod config;
+pub mod dma;
 pub mod model;
 pub mod solver;
 
 use nucleus_db::clock::ClockTree;
+use nucleus_db::dma::DmaMap;
 use nucleus_db::Database;
 
 pub use clocks::{PeripheralFreq, ResolvedClocks};
@@ -56,6 +58,15 @@ pub fn clock_tree_for(family: &str) -> ClockTree {
     match family {
         "STM32F411RE" => ClockTree::f411re(),
         _ => ClockTree::f446re(),
+    }
+}
+
+/// The DMA model to validate against for `family`, mirroring [`clock_tree_for`].
+/// Unknown families fall back to the F446RE.
+pub fn dma_map_for(family: &str) -> DmaMap {
+    match family {
+        "STM32F411RE" => DmaMap::f411re(),
+        _ => DmaMap::f446re(),
     }
 }
 

@@ -1,0 +1,16 @@
+# Two peripherals whose DMA RX requests both fall on DMA1 stream 0: I2C1_RX
+# (which also has a free alternative on stream 5) and UART5_RX (stream 0 only).
+# CubeMX lets you wire this and the second transfer silently never fires;
+# nucleus catches the contention and proposes the free alternative.
+[device]
+family = "STM32F446RE"
+
+[peripherals.i2c1]
+sda = "PB7"
+scl = "PB6"
+dma = ["rx"]
+
+[peripherals.uart5]
+tx = "PC12"
+rx = "PD2"
+dma = ["rx"]
