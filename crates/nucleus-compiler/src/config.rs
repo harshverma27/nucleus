@@ -34,6 +34,9 @@ pub struct Config {
     pub clocks: Clocks,
     #[serde(default)]
     pub trace: Trace,
+    /// `[[exti]]` entries — external interrupt pin definitions.
+    #[serde(default)]
+    pub exti: Vec<ExtiPin>,
 }
 
 /// The `[device]` section.
@@ -155,6 +158,15 @@ pub struct TraceVariable {
     pub ty: String,
 }
 
+/// One `[[exti]]` entry.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtiPin {
+    pub pin: String,
+    #[serde(default)]
+    pub priority: Option<u8>,
+}
+
 /// Error returned when `stm32.toml` text is not valid TOML or violates the schema.
 #[derive(Debug)]
 pub struct ParseError(toml::de::Error);
@@ -232,5 +244,26 @@ mode = 0
         let cfg = parse("[clocks]\napb1 = false\n").unwrap();
         assert!(!cfg.clocks.apb1);
         assert!(cfg.clocks.apb2); // unspecified -> enabled
+    }
+
+    #[test]
+    fn parses_exti_entries() {
+        let cfg = parse(
+            r#"
+[[exti]]
+pin = "PA0"
+priority = 5
+
+[[exti]]
+pin = "PB1"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.exti.len(), 2);
+        assert_eq!(cfg.exti[0].pin, "PA0");
+        assert_eq!(cfg.exti[0].priority, Some(5));
+        assert_eq!(cfg.exti[1].pin, "PB1");
+        assert_eq!(cfg.exti[1].priority, None);
     }
 }
