@@ -7,13 +7,16 @@
 //! Phase 2 ships the parser and the constraint solver (four conflict classes).
 //! HAL code generation lands in Phase 3.
 
+pub mod clocks;
 pub mod codegen;
 pub mod config;
 pub mod model;
 pub mod solver;
 
+use nucleus_db::clock::ClockTree;
 use nucleus_db::Database;
 
+pub use clocks::{PeripheralFreq, ResolvedClocks};
 pub use codegen::{generate, Generated};
 pub use config::{Config, ParseError};
 pub use solver::Conflict;
@@ -43,6 +46,16 @@ pub fn database_for(family: &str) -> Result<Database, UnknownFamily> {
         "STM32F446RE" | "" => Ok(Database::f446re()),
         "STM32F411RE" => Ok(Database::f411re()),
         other => Err(UnknownFamily(other.to_string())),
+    }
+}
+
+/// The clock-tree model to validate against for `family`, mirroring
+/// [`database_for`]. Unknown families fall back to the F446RE so the clock check
+/// degrades the same way the pin check does (never a panic).
+pub fn clock_tree_for(family: &str) -> ClockTree {
+    match family {
+        "STM32F411RE" => ClockTree::f411re(),
+        _ => ClockTree::f446re(),
     }
 }
 

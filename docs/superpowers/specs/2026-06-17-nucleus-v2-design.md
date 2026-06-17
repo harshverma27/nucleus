@@ -59,10 +59,15 @@ Each milestone has a **measurable exit criterion** (matching v1's gated-phase cu
 
 The Verifier turns nucleus from "is the bus clock enabled?" (v1's only clock check) into a real hardware reasoning engine that rejects configurations that *compile and flash but do not work*.
 
-**M1 — Clock-tree solver.**
-Model the full STM32F4 clock tree: oscillator sources (HSE/HSI/LSE/LSI), the main PLL (M/N/P/Q dividers) and PLLI2S/PLLSAS as applicable, SYSCLK selection, the AHB prescaler, APB1/APB2 prescalers, and per-peripheral clock derivation (including the APBx timer ×2 rule). Given a `[clocks]` config, compute the *actual* frequency every configured peripheral receives and validate it against intent and silicon limits (e.g. APB1 ≤ 45 MHz, APB2 ≤ 90 MHz, SYSCLK ≤ 180 MHz on F446; the F411 limits differ and must be family-parameterized).
+**M1 — Clock-tree solver. ✅ DONE.**
+Model the full STM32F4 clock tree: oscillator sources (HSE/HSI/LSE/LSI), the main PLL (M/N/P/Q dividers), SYSCLK selection, the AHB prescaler, APB1/APB2 prescalers, and per-peripheral clock derivation (including the APBx timer ×2 rule). Given a `[clocks]` config, compute the *actual* frequency every configured peripheral receives and validate it against intent and silicon limits (e.g. APB1 ≤ 45 MHz, APB2 ≤ 90 MHz, SYSCLK ≤ 180 MHz on F446; the F411 limits differ and must be family-parameterized).
 - **Replaces** v1's boolean "bus enabled" check with frequency math.
 - **Exit:** nucleus catches (a) an APB prescaler that over-clocks a bus, and (b) a UART baud rate that is unreachable from its derived clock — both of which CubeMX silently accepts. Unit-tested against hand-verified reference frequencies for both families.
+- **Landed as:**
+  - `nucleus-db` `clock` module — a family-parameterized, hand-maintained clock-tree *data model* (`ClockTree::f446re()/f411re()`: oscillators, PLL divider ranges + VCO constraints, SYSCLK sources, AHB/APB prescaler sets, per-peripheral bus derivation, per-family silicon limits, the APBx-timer ×2 rule). No pack source exists for clock data, so a reference-manual seed test (RM0390/RM0383) is the oracle.
+  - `nucleus-compiler` `clocks` module — pure `resolve()` (config + model → per-node frequencies) and `validate()` (over-clock vs limits, PLL VCO/divider range, prescaler legality, UART baud reachability), emitting the new fatal `Conflict::ClockConstraint { node, reason }`. Extended `[clocks]` config (PLL dividers, prescalers, source selection; all optional, defaulting to the family's known-good NUCLEO setup). Wired into `solver::solve` (clock conflicts sort last) via `clock_tree_for(family)`.
+  - `nucleus-lsp` surfaces clock conflicts automatically (`analysis.rs` maps them to the `[clocks]` header, or the peripheral table for baud errors).
+  - Exit criterion proven end-to-end: `nucleus check tests/fixtures/overclock_apb1.toml` → `clock constraint [APB1]: APB1 = 180 MHz exceeds the 45 MHz limit`, exit 1. Both exit cases unit-tested + a CLI integration test; full `make check` green.
 
 **M2 — DMA arbitration.**
 Model the DMA controllers (DMA1/DMA2), their streams × channels, and the peripheral-request mapping table (which peripheral/direction maps to which stream+channel). Detect when two enabled peripherals require the same stream, and — using the request map — suggest a conflict-free alternative when one exists.

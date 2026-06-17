@@ -1,0 +1,17 @@
+# A config CubeMX accepts but that silently over-clocks APB1: a 180 MHz HCLK
+# with APB1 prescaler 1 drives PCLK1 to 180 MHz, far past the 45 MHz limit.
+# The M1 clock-tree solver must reject it.
+[device]
+family = "STM32F446RE"
+
+[clocks]
+source = "pll"
+pll_source = "hse"
+pll_m = 8
+pll_n = 360
+pll_p = 2
+apb1_prescaler = 1
+
+[peripherals.usart2]
+tx = "PA2"
+rx = "PA3"

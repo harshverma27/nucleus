@@ -187,6 +187,16 @@ fn conflict_spans(
                 .and_then(|key| header_span(text, key)),
             text,
         ),
+        // A clock constraint's `node` is either a peripheral DB name (a baud
+        // reachability error → underline that table) or a clock-tree node like
+        // `APB1`/`PLL` (→ underline the `[clocks]` header).
+        Conflict::ClockConstraint { node, .. } => single(
+            name_to_key
+                .get(node)
+                .and_then(|key| header_span(text, key))
+                .or_else(|| clocks_header_span(text)),
+            text,
+        ),
     }
 }
 
@@ -203,6 +213,12 @@ fn header_span(text: &str, key: &str) -> Option<Range<usize>> {
     let header = format!("[peripherals.{key}]");
     let start = text.find(&header)?;
     Some(start..start + header.len())
+}
+
+/// The byte range of the `[clocks]` table header, if present.
+fn clocks_header_span(text: &str) -> Option<Range<usize>> {
+    let start = text.find("[clocks]")?;
+    Some(start..start + "[clocks]".len())
 }
 
 /// The body region of a `[peripherals.<key>]` table: from its header to the next
@@ -400,6 +416,38 @@ mod tests {
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("AF mismatch"));
         assert_eq!(diags[0].range.start.line, 1); // the `tx = "PB0"` line
+    }
+
+    #[test]
+    fn clock_constraint_underlines_clocks_table() {
+        // Over-clocked APB1 -> a clock constraint pointing at the [clocks] header.
+        let text =
+            "[device]\nfamily = \"STM32F446RE\"\n\n[clocks]\npll_m = 8\npll_n = 360\npll_p = 2\napb1_prescaler = 1\n";
+        let diags = diagnostics(text);
+        assert_eq!(diags.len(), 1, "got {diags:?}");
+        assert!(diags[0].message.contains("clock constraint"));
+        let src_line = text
+            .lines()
+            .nth(diags[0].range.start.line as usize)
+            .unwrap();
+        assert!(src_line.contains("[clocks]"), "underlined: {src_line}");
+    }
+
+    #[test]
+    fn baud_constraint_underlines_uart_table() {
+        let text =
+            "[device]\nfamily = \"STM32F446RE\"\n\n[clocks]\nsource = \"hsi\"\n\n[peripherals.usart2]\ntx = \"PA2\"\nrx = \"PA3\"\nbaud = 20000000\n";
+        let diags = diagnostics(text);
+        assert_eq!(diags.len(), 1, "got {diags:?}");
+        assert!(diags[0].message.contains("clock constraint"));
+        let src_line = text
+            .lines()
+            .nth(diags[0].range.start.line as usize)
+            .unwrap();
+        assert!(
+            src_line.contains("[peripherals.usart2]"),
+            "underlined: {src_line}"
+        );
     }
 
     #[test]
