@@ -204,6 +204,17 @@ fn conflict_spans(
                 .and_then(|key| header_span(text, key)),
             text,
         ),
+        // An IRQ conflict's `node` is either a peripheral DB name
+        // (unhandled/priority-inversion → underline that table) or a pin
+        // string like `"PA0"` (EXTI collision → text-search the whole
+        // document for the quoted pin as a fallback).
+        Conflict::IrqConflict { node, .. } => single(
+            name_to_key
+                .get(node)
+                .and_then(|key| header_span(text, key))
+                .or_else(|| find_quoted(text, 0..text.len(), node)),
+            text,
+        ),
     }
 }
 

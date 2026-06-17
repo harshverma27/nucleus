@@ -20,8 +20,20 @@ use nucleus_db::{Database, Pin};
 use crate::config::Config;
 use crate::model::{self, Bus};
 
-/// A single resolved conflict. Every variant is an error (it makes the config
-/// un-buildable); `nucleus check` exits non-zero if any are present.
+/// The severity of a [`Conflict`]. Every variant predating M3 is implicitly
+/// [`Severity::Error`] (it makes the config un-buildable); M3's
+/// [`Conflict::IrqConflict`] is the first variant to carry an explicit,
+/// per-instance severity (e.g. a priority inversion may only warrant a
+/// warning while an unhandled-but-enabled IRQ is fatal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    Error,
+    Warning,
+}
+
+/// A single resolved conflict. Most variants are errors (they make the config
+/// un-buildable); `nucleus check` exits non-zero if any [`Severity::Error`]
+/// conflicts are present. See [`Conflict::severity`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Conflict {
     /// Two signals assigned to the same physical pin.
@@ -77,6 +89,32 @@ pub enum Conflict {
         /// slot one of the contenders could move to.
         suggestion: Option<(String, String)>,
     },
+    /// An IRQ/NVIC verification failure: an EXTI line shared by pins that are
+    /// both enabled, a peripheral interrupt enabled but never handled, or an
+    /// NVIC priority inversion. One flexible variant covers all three, like
+    /// [`Conflict::ClockConstraint`].
+    IrqConflict {
+        /// The offending node: a DB peripheral name (unhandled/priority-inversion
+        /// cases, for `name_to_key` lookup in the LSP) or a pin string like
+        /// `"PA0"` (EXTI collision case, for a text-search fallback).
+        node: String,
+        /// Human-readable explanation; also the `Display` body.
+        reason: String,
+        /// This variant's severity; not every IRQ issue is fatal.
+        severity: Severity,
+    },
+}
+
+impl Conflict {
+    /// This conflict's severity. Every variant predating M3 is unconditionally
+    /// [`Severity::Error`] (preserves current behavior exactly); only
+    /// [`Conflict::IrqConflict`] carries an explicit, per-instance severity.
+    pub fn severity(&self) -> Severity {
+        match self {
+            Conflict::IrqConflict { severity, .. } => *severity,
+            _ => Severity::Error,
+        }
+    }
 }
 
 /// A `(peripheral, signal)` pair identifying one use of a pin.
@@ -154,6 +192,9 @@ impl fmt::Display for Conflict {
                     write!(f, " (move {peripheral} to {slot})")?;
                 }
                 Ok(())
+            }
+            Conflict::IrqConflict { node, reason, .. } => {
+                write!(f, "IRQ conflict [{node}]: {reason}")
             }
         }
     }
@@ -439,6 +480,104 @@ rx = "PA3"
                 .iter()
                 .any(|c| matches!(c, Conflict::InvalidPin { value, .. } if value == "PZ9")),
             "got {conflicts:?}"
+        );
+    }
+
+    #[test]
+    fn pre_m3_conflict_variants_are_all_severity_error() {
+        // Every conflict variant that existed before M3 is implicitly an
+        // error; introducing `Severity` (and the new `IrqConflict` variant,
+        // which carries its own explicit severity) must not change that.
+        let pin = Pin::from_str("PA5").unwrap();
+        assert_eq!(
+            Conflict::PinCollision { pin, users: vec![] }.severity(),
+            Severity::Error
+        );
+        assert_eq!(
+            Conflict::AfMismatch {
+                pin,
+                peripheral: "USART2".to_string(),
+                signal: "TX".to_string(),
+            }
+            .severity(),
+            Severity::Error
+        );
+        assert_eq!(
+            Conflict::InvalidPin {
+                peripheral: "USART2".to_string(),
+                key: "tx".to_string(),
+                value: "PZ9".to_string(),
+            }
+            .severity(),
+            Severity::Error
+        );
+        assert_eq!(
+            Conflict::MissingPin {
+                peripheral: "SPI1".to_string(),
+                key: "mosi".to_string(),
+                signal: "MOSI".to_string(),
+            }
+            .severity(),
+            Severity::Error
+        );
+        assert_eq!(
+            Conflict::ClockDomainDisabled {
+                peripheral: "SPI1".to_string(),
+                bus: Bus::Apb2,
+            }
+            .severity(),
+            Severity::Error
+        );
+        assert_eq!(
+            Conflict::PeripheralUnavailable {
+                peripheral: "UART4".to_string(),
+                family: "STM32F411RE".to_string(),
+            }
+            .severity(),
+            Severity::Error
+        );
+        assert_eq!(
+            Conflict::ClockConstraint {
+                node: "SYSCLK".to_string(),
+                reason: "over-clocked".to_string(),
+            }
+            .severity(),
+            Severity::Error
+        );
+        assert_eq!(
+            Conflict::DmaCollision {
+                first: "USART2".to_string(),
+                second: "SPI1".to_string(),
+                controller: "DMA1".to_string(),
+                stream: 3,
+                suggestion: None,
+            }
+            .severity(),
+            Severity::Error
+        );
+    }
+
+    #[test]
+    fn irq_conflict_severity_is_per_instance() {
+        // Unlike every other variant, `IrqConflict`'s severity is whatever the
+        // caller set, not hardcoded.
+        assert_eq!(
+            Conflict::IrqConflict {
+                node: "EXTI0".to_string(),
+                reason: "enabled but unhandled".to_string(),
+                severity: Severity::Error,
+            }
+            .severity(),
+            Severity::Error
+        );
+        assert_eq!(
+            Conflict::IrqConflict {
+                node: "PA0".to_string(),
+                reason: "shares EXTI0 with PB0".to_string(),
+                severity: Severity::Warning,
+            }
+            .severity(),
+            Severity::Warning
         );
     }
 }
