@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use nucleus_compiler::{check_family, ParseError};
+use nucleus_compiler::{check_family, ParseError, Severity};
 
 use scaffold::Written;
 
@@ -237,6 +237,13 @@ fn run_check(path: &Path) -> ExitCode {
             path.display(),
             report.config.peripherals.len()
         );
+        // Warnings don't fail the build, but still surface them.
+        if !report.conflicts.is_empty() {
+            eprintln!();
+            for conflict in &report.conflicts {
+                eprintln!("  warning: {conflict}");
+            }
+        }
         // A family warning is advisory, not fatal: still exit 0.
         return ExitCode::SUCCESS;
     }
@@ -248,7 +255,11 @@ fn run_check(path: &Path) -> ExitCode {
         if n == 1 { "" } else { "s" }
     );
     for conflict in &report.conflicts {
-        eprintln!("  error: {conflict}");
+        let prefix = match conflict.severity() {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+        };
+        eprintln!("  {prefix}: {conflict}");
     }
     eprintln!();
     ExitCode::FAILURE

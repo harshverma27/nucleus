@@ -96,6 +96,50 @@ fn dma_collision_exits_nonzero_with_suggestion() {
 }
 
 #[test]
+fn priority_inversion_exits_zero_with_warning() {
+    // M3 severity exit criterion at the CLI boundary: a warning-only conflict
+    // (dma_priority > irq_priority on the same peripheral) still exits 0, but
+    // the warning is printed (prefixed "warning:", not "error:").
+    let out = run_check("priority_inversion.toml");
+    assert!(
+        out.status.success(),
+        "expected success despite a warning-only conflict, stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let warning_lines = stderr.lines().filter(|l| l.contains("warning:")).count();
+    assert_eq!(
+        warning_lines, 1,
+        "expected exactly one warning, got stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("error:"),
+        "a warnings-only run must not print any error: line, got:\n{stderr}"
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("OK"),
+        "success message should still print, got stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn pa5_collision_error_lines_are_prefixed_error_not_warning() {
+    // Regression: error-severity conflicts must still print "  error: ", not
+    // "  warning: ", now that the prefix is severity-driven instead of fixed.
+    let out = run_check("pa5_collision.toml");
+    assert!(!out.status.success());
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("warning:"),
+        "an error-only run must not print any warning: line, got:\n{stderr}"
+    );
+}
+
+#[test]
 fn missing_file_exits_nonzero() {
     let out = Command::new(env!("CARGO_BIN_EXE_nucleus"))
         .arg("check")
