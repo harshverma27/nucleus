@@ -69,9 +69,13 @@ Model the full STM32F4 clock tree: oscillator sources (HSE/HSI/LSE/LSI), the mai
   - `nucleus-lsp` surfaces clock conflicts automatically (`analysis.rs` maps them to the `[clocks]` header, or the peripheral table for baud errors).
   - Exit criterion proven end-to-end: `nucleus check tests/fixtures/overclock_apb1.toml` → `clock constraint [APB1]: APB1 = 180 MHz exceeds the 45 MHz limit`, exit 1. Both exit cases unit-tested + a CLI integration test; full `make check` green.
 
-**M2 — DMA arbitration.**
+**M2 — DMA arbitration. ✅ DONE.**
 Model the DMA controllers (DMA1/DMA2), their streams × channels, and the peripheral-request mapping table (which peripheral/direction maps to which stream+channel). Detect when two enabled peripherals require the same stream, and — using the request map — suggest a conflict-free alternative when one exists.
 - **Exit:** a config with two peripherals contending for one DMA stream produces exactly one error that names both peripherals and proposes a valid alternative assignment. Deterministic ordering, unit-tested.
+- **Landed as:**
+  - `nucleus-db` `dma` module — family-parameterized, hand-maintained DMA model (`DmaMap::f446re()/f411re()`): DMA1/DMA2 streams × channels and the peripheral-request map (`candidates(peripheral, direction) -> Vec<Slot>`), from RM0390 Tables 28/29 (F446) and RM0383 Tables 27/28 (F411), with multi-slot alternatives preserved. RM-cited seed test is the oracle.
+  - `nucleus-compiler` `dma` module — pure `validate()` greedily assigns each requested `(peripheral, direction)` the first free stream and emits the fatal `Conflict::DmaCollision { first, second, controller, stream, suggestion }` once per contested stream, with a free-alternative suggestion when one exists. Peripherals opt into DMA explicitly (`dma = true` / `dma = ["rx"]`) so the default scaffold config stays clean. Wired into `solver::solve` after the M1 clock check via `dma_map_for(family)`; LSP maps the conflict to the first contender's table.
+  - Exit proven end-to-end: `nucleus check tests/fixtures/dma_collision.toml` → `DMA collision: I2C1 and UART5 both need DMA1 stream 0 (move I2C1 to DMA1 stream 5 (channel 1))`, exit 1. Unit + CLI integration tests; full `make check` green.
 
 **M3 — IRQ / NVIC verifier.**
 Model the NVIC vector table, shared interrupt lines (notably the EXTI line groupings, e.g. EXTI9_5/EXTI15_10), priority grouping, and the codegen's handler ownership. Catch: two GPIO interrupts sharing an EXTI group without disambiguation, an interrupt enabled with no generated handler, and priority inversions between dependent peripherals (e.g. a DMA-completion ISR lower priority than the peripheral it serves).
