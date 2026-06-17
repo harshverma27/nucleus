@@ -460,3 +460,146 @@ fn sysclk_sources_present() {
         assert!(srcs.contains(&SysclkSource::Hsi));
     }
 }
+
+// --- DMA request-map model (M2) ------------------------------------------
+//
+// Like the clock tree, the DMA request map has no pack source to cross-validate
+// against, so the oracle is the reference manual itself: every slot below is
+// hand-typed from RM0390 (F446, DMA1 Table 28 / DMA2 Table 29) and RM0383 (F411,
+// DMA1 Table 27 / DMA2 Table 28), and the model must agree with it.
+
+use dma::{Controller, Direction, DmaMap, Slot};
+
+#[test]
+fn dma_map_f446_matches_rm0390_seed() {
+    let m = DmaMap::f446re();
+
+    // RM0390 Table 28 (DMA1): USART2_RX is DMA1 stream 5 channel 4,
+    // USART2_TX is DMA1 stream 6 channel 4.
+    assert_eq!(
+        m.candidates("USART2", Direction::Rx),
+        vec![Slot::new(Controller::Dma1, 5, 4)]
+    );
+    assert_eq!(
+        m.candidates("USART2", Direction::Tx),
+        vec![Slot::new(Controller::Dma1, 6, 4)]
+    );
+
+    // RM0390 Table 29 (DMA2): SPI1_RX is on channel 3, streams 0 and 2 (the
+    // two-slot alternative the solver relies on); SPI1_TX on streams 3 and 5.
+    assert_eq!(
+        m.candidates("SPI1", Direction::Rx),
+        vec![
+            Slot::new(Controller::Dma2, 0, 3),
+            Slot::new(Controller::Dma2, 2, 3),
+        ]
+    );
+    assert_eq!(
+        m.candidates("SPI1", Direction::Tx),
+        vec![
+            Slot::new(Controller::Dma2, 3, 3),
+            Slot::new(Controller::Dma2, 5, 3),
+        ]
+    );
+
+    // RM0390 Table 29: ADC1 is DMA2 channel 0, streams 0 and 4.
+    assert_eq!(
+        m.candidates("ADC1", Direction::Rx),
+        vec![
+            Slot::new(Controller::Dma2, 0, 0),
+            Slot::new(Controller::Dma2, 4, 0),
+        ]
+    );
+
+    // RM0390 Table 28: SPI3_RX channel 0, streams 0 and 2.
+    assert_eq!(
+        m.candidates("SPI3", Direction::Rx),
+        vec![
+            Slot::new(Controller::Dma1, 0, 0),
+            Slot::new(Controller::Dma1, 2, 0),
+        ]
+    );
+
+    // USART1 is an F446 (and F411) DMA2 peripheral; UART5 is F446-only.
+    assert!(m.has_peripheral("USART1"));
+    assert!(m.has_peripheral("UART5"));
+    // Unmodeled peripheral yields no candidates (never a false positive).
+    assert!(m.candidates("MADEUP", Direction::Tx).is_empty());
+}
+
+#[test]
+fn dma_map_f411_matches_rm0383_seed() {
+    let m = DmaMap::f411re();
+
+    // RM0383 Table 27 (DMA1): shared peripherals keep the F446 assignments.
+    assert_eq!(
+        m.candidates("USART2", Direction::Tx),
+        vec![Slot::new(Controller::Dma1, 6, 4)]
+    );
+    assert_eq!(
+        m.candidates("I2C1", Direction::Rx),
+        vec![
+            Slot::new(Controller::Dma1, 0, 1),
+            Slot::new(Controller::Dma1, 5, 1),
+        ]
+    );
+
+    // RM0383 Table 28 (DMA2): USART1_RX channel 4, streams 2 and 5.
+    assert_eq!(
+        m.candidates("USART1", Direction::Rx),
+        vec![
+            Slot::new(Controller::Dma2, 2, 4),
+            Slot::new(Controller::Dma2, 5, 4),
+        ]
+    );
+
+    // The F411 package omits UART4/5 and USART3 — no DMA rows for them.
+    assert!(!m.has_peripheral("UART4"));
+    assert!(!m.has_peripheral("UART5"));
+    assert!(!m.has_peripheral("USART3"));
+    assert!(m.candidates("UART5", Direction::Tx).is_empty());
+}
+
+#[test]
+fn dma_request_map_differs_by_family() {
+    let f446 = DmaMap::f446re();
+    let f411 = DmaMap::f411re();
+
+    // Shared peripheral present on both with identical slots.
+    assert!(f446.has_peripheral("SPI1") && f411.has_peripheral("SPI1"));
+    assert_eq!(
+        f446.candidates("SPI1", Direction::Tx),
+        f411.candidates("SPI1", Direction::Tx)
+    );
+
+    // UART5 exists only on the F446.
+    assert!(f446.has_peripheral("UART5"));
+    assert!(!f411.has_peripheral("UART5"));
+}
+
+#[test]
+fn dma_slots_are_in_range_and_deterministic() {
+    // Every modeled slot uses a valid stream (0..=7) and channel (0..=7), and
+    // candidate enumeration preserves table order (determinism for the solver).
+    for m in [DmaMap::f446re(), DmaMap::f411re()] {
+        for r in m.requests() {
+            assert!(r.slot.stream <= 7, "stream out of range: {:?}", r);
+            assert!(r.slot.channel <= 7, "channel out of range: {:?}", r);
+        }
+        // Two enumerations of the same request are byte-identical.
+        let a = m.candidates("SPI1", Direction::Rx);
+        let b = m.candidates("SPI1", Direction::Rx);
+        assert_eq!(a, b);
+    }
+}
+
+#[test]
+fn dma_direction_resolves_spi_signal_aliases() {
+    // SPI MOSI/MISO are the TX/RX DMA paths; the solver resolves an stm32.toml
+    // `mosi`/`miso` line to the right direction.
+    assert_eq!(Direction::from_signal("MOSI"), Some(Direction::Tx));
+    assert_eq!(Direction::from_signal("MISO"), Some(Direction::Rx));
+    assert_eq!(Direction::from_signal("TX"), Some(Direction::Tx));
+    assert_eq!(Direction::from_signal("RX"), Some(Direction::Rx));
+    assert_eq!(Direction::from_signal("SCK"), None);
+}
