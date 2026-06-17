@@ -23,7 +23,7 @@ use nucleus_db::Database;
 pub use clocks::{PeripheralFreq, ResolvedClocks};
 pub use codegen::{generate, Generated};
 pub use config::{Config, ParseError};
-pub use solver::Conflict;
+pub use solver::{Conflict, Severity};
 
 /// The outcome of checking one `stm32.toml`.
 #[derive(Debug, Clone)]
@@ -37,8 +37,14 @@ pub struct CheckReport {
 
 impl CheckReport {
     /// Whether the config is free of conflicts.
+    ///
+    /// A config is considered OK if it contains no [`Severity::Error`] conflicts;
+    /// warnings do not make it fail.
     pub fn is_ok(&self) -> bool {
-        self.conflicts.is_empty()
+        !self
+            .conflicts
+            .iter()
+            .any(|c| c.severity() == Severity::Error)
     }
 }
 
@@ -201,5 +207,57 @@ family = "STM32H750"
             "got {:?}",
             report.conflicts
         );
+    }
+
+    #[test]
+    fn is_ok_accepts_warnings_only() {
+        // A config with only warning-level conflicts (priority inversion) should
+        // pass is_ok(). Priority inversion occurs when dma_priority > irq_priority.
+        let report = check(
+            r#"
+[device]
+family = "STM32F446RE"
+
+[peripherals.usart2]
+tx = "PA2"
+rx = "PA3"
+irq = true
+irq_priority = 2
+dma = true
+dma_priority = 5
+"#,
+        )
+        .unwrap();
+        // Should have exactly one warning (priority inversion)
+        assert_eq!(report.conflicts.len(), 1);
+        assert_eq!(report.conflicts[0].severity(), Severity::Warning);
+        // is_ok() should return true because there are no errors
+        assert!(report.is_ok());
+    }
+
+    #[test]
+    fn is_ok_rejects_errors() {
+        // A config with any error-level conflict should fail is_ok().
+        // Use the existing pin collision test case which produces an error.
+        let report = check(
+            r#"
+[peripherals.spi1]
+mosi = "PA7"
+miso = "PA6"
+sck = "PA5"
+
+[peripherals.tim2]
+channel1 = "PA5"
+"#,
+        )
+        .unwrap();
+        // Should have at least one error (pin collision)
+        assert!(!report.conflicts.is_empty());
+        assert!(report
+            .conflicts
+            .iter()
+            .any(|c| c.severity() == Severity::Error));
+        // is_ok() should return false because there are errors
+        assert!(!report.is_ok());
     }
 }
