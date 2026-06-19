@@ -13,6 +13,7 @@ pub mod config;
 pub mod dma;
 pub mod irq;
 pub mod model;
+pub mod router;
 pub mod solver;
 
 use nucleus_db::clock::ClockTree;
