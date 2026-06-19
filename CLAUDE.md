@@ -115,3 +115,11 @@ Both are read-only upstream data — never hand-edit them; corrections to pack d
 - `nucleus check` exits non-zero on any conflict (CI-gatable)
 
 **CI:** `.github/workflows/ci.yml` runs gate + cross-platform build on every PR; `release.yml` builds artifacts on `v*` tag.
+
+## Github
+
+**Github Workflow** 
+- See information related to week1 and week2 at issue #19.
+- If working on week1, see information on #20 then first post plan, and after completion post completion, push directly to branch `20-v2-week-1-verify-completion-prove-infrastructure`
+- If working on week2, see information on #20 then first post plan, and after completion post completion  push directly to branch `21-v2-week-2-tests-ledger-lockstep-crown`
+- Update comment 1, tick completed work on every push.

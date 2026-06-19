@@ -232,6 +232,16 @@ fn conflict_spans(
                 .or_else(|| find_pin_anywhere(text, node)),
             text,
         ),
+        // An unroutable node's `node` is either a peripheral DB name
+        // (or a composite like `"USART2_TX"` which will not match any
+        // table header, falling through gracefully to the whole-first-line default).
+        Conflict::Unroutable { node, .. } => single(
+            name_to_key
+                .get(node)
+                .and_then(|key| header_span(text, key))
+                .or_else(|| find_pin_anywhere(text, node)),
+            text,
+        ),
     }
 }
 
@@ -560,6 +570,48 @@ mod tests {
             src_line.contains("[peripherals.usart2]"),
             "underlined: {src_line}"
         );
+    }
+
+    #[test]
+    fn unroutable_underlines_peripheral_table() {
+        // Construct a conflict directly: an Unroutable conflict with a peripheral node.
+        // The diagnostic should underline the matching peripheral's table header.
+        let text = "[device]\nfamily = \"STM32F446RE\"\n\n[peripherals.spi1]\nmosi = \"PA7\"\nmiso = \"PA6\"\nsck = \"PA5\"\n";
+        let conflict = Conflict::Unroutable {
+            node: "SPI1".to_string(),
+            reason: "No valid pin assignment found for SPI1_MOSI given current constraints".to_string(),
+        };
+        let name_to_key: HashMap<String, String> = vec![("SPI1".to_string(), "spi1".to_string())]
+            .into_iter()
+            .collect();
+        let spans = conflict_spans(text, &conflict, &name_to_key);
+        assert_eq!(spans.len(), 1);
+        let span = &spans[0];
+        let underlined_text = &text[span.clone()];
+        assert!(
+            underlined_text.contains("[peripherals.spi1]"),
+            "expected to underline peripheral header, got: {underlined_text}"
+        );
+    }
+
+    #[test]
+    fn unroutable_with_composite_node_falls_back_gracefully() {
+        // When a node is a composite like "SPI1_MOSI" (which won't match any DB name),
+        // the lookup should fail gracefully and fall back to the whole-first-line default.
+        let text = "[device]\nfamily = \"STM32F446RE\"\n\n[peripherals.spi1]\nmosi = \"PA7\"\n";
+        let conflict = Conflict::Unroutable {
+            node: "SPI1_MOSI".to_string(),
+            reason: "No valid pin assignment for SPI1_MOSI".to_string(),
+        };
+        let name_to_key: HashMap<String, String> = vec![("SPI1".to_string(), "spi1".to_string())]
+            .into_iter()
+            .collect();
+        let spans = conflict_spans(text, &conflict, &name_to_key);
+        assert_eq!(spans.len(), 1);
+        // With no header match and no pin match, should fall back to whole_first_line.
+        let span = &spans[0];
+        let underlined_text = &text[span.clone()];
+        assert_eq!(underlined_text, "[device]", "expected fallback to first line, got: {underlined_text}");
     }
 
     #[test]
