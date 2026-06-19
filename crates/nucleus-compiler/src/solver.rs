@@ -103,6 +103,16 @@ pub enum Conflict {
         /// This variant's severity; not every IRQ issue is fatal.
         severity: Severity,
     },
+    /// A constraint auto-router failure: the router could not find a valid pin
+    /// assignment for some peripheral role given the current constraints.
+    /// Always fatal (no warning-level concept for an unroutable result).
+    Unroutable {
+        /// The offending node: a peripheral instance name or role, for span
+        /// mapping and dedup.
+        node: String,
+        /// Human-readable explanation; also the `Display` body.
+        reason: String,
+    },
 }
 
 impl Conflict {
@@ -195,6 +205,9 @@ impl fmt::Display for Conflict {
             }
             Conflict::IrqConflict { node, reason, .. } => {
                 write!(f, "IRQ conflict [{node}]: {reason}")
+            }
+            Conflict::Unroutable { node, reason } => {
+                write!(f, "unroutable [{node}]: {reason}")
             }
         }
     }
@@ -582,6 +595,36 @@ rx = "PA3"
             }
             .severity(),
             Severity::Warning
+        );
+    }
+
+    #[test]
+    fn unroutable_severity_is_always_error() {
+        // `Unroutable` is always a fatal error; no per-instance severity.
+        assert_eq!(
+            Conflict::Unroutable {
+                node: "USART2_TX".to_string(),
+                reason: "no free pins satisfy constraints".to_string(),
+            }
+            .severity(),
+            Severity::Error
+        );
+    }
+
+    #[test]
+    fn unroutable_display_format() {
+        // `Unroutable`'s Display output must include both node and reason,
+        // following the `IrqConflict` pattern.
+        let conflict = Conflict::Unroutable {
+            node: "SPI1_MOSI".to_string(),
+            reason: "all candidate pins are occupied".to_string(),
+        };
+        let display = format!("{}", conflict);
+        assert!(display.contains("unroutable"), "display: {display}");
+        assert!(display.contains("SPI1_MOSI"), "display: {display}");
+        assert!(
+            display.contains("all candidate pins are occupied"),
+            "display: {display}"
         );
     }
 }
