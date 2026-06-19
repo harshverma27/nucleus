@@ -83,6 +83,107 @@ fn reverse_lookup_missing_signal_is_none() {
     assert_eq!(db.find_af(pin, "I2C1", "SDA"), None);
 }
 
+// --- Candidate pins lookup (used by the auto-router M4) -------------------
+
+#[test]
+fn candidate_pins_finds_known_peripheral_signal() {
+    let db = Database::f446re();
+
+    // SPI1 MOSI is available on PA7 (and other pins).
+    let pins = db.candidate_pins("SPI1", "MOSI");
+
+    assert!(
+        pins.iter().any(|p| p.port == Port::A && p.number == 7),
+        "SPI1_MOSI should include PA7, got {:?}",
+        pins
+    );
+}
+
+#[test]
+fn candidate_pins_returns_empty_for_unmapped_signal() {
+    let db = Database::f446re();
+
+    // An unmodeled peripheral/signal combo returns empty, never panics.
+    let pins = db.candidate_pins("MADEUP", "SIGNAL");
+
+    assert_eq!(pins, vec![], "unmodeled peripheral+signal should return empty vec");
+}
+
+#[test]
+fn candidate_pins_returns_empty_for_unmapped_peripheral() {
+    let db = Database::f446re();
+
+    // SPI1 has no INVALID signal.
+    let pins = db.candidate_pins("SPI1", "INVALID");
+
+    assert_eq!(
+        pins, vec![],
+        "unmapped signal on known peripheral should return empty vec"
+    );
+}
+
+#[test]
+fn candidate_pins_is_sorted_and_deduplicated() {
+    let db = Database::f446re();
+
+    // Get candidate pins for a signal that should appear on multiple pins.
+    let pins = db.candidate_pins("USART2", "TX");
+
+    // Result should be sorted.
+    for i in 1..pins.len() {
+        assert!(
+            pins[i - 1] <= pins[i],
+            "candidate pins should be sorted, got {pins:?}"
+        );
+    }
+
+    // No duplicates.
+    for i in 1..pins.len() {
+        assert_ne!(
+            pins[i - 1], pins[i],
+            "candidate pins should be deduplicated, got {pins:?}"
+        );
+    }
+}
+
+#[test]
+fn candidate_pins_agrees_with_find_af_forward_lookup() {
+    let db = Database::f446re();
+
+    // Cross-validation: if candidate_pins returns a pin, that pin must be
+    // reachable via find_af with the same peripheral+signal.
+    let candidates = db.candidate_pins("SPI1", "MOSI");
+    for pin in candidates {
+        let af = db.find_af(pin, "SPI1", "MOSI");
+        assert!(
+            af.is_some(),
+            "candidate pin {} for SPI1_MOSI should be reachable via find_af, got {:?}",
+            pin,
+            af
+        );
+    }
+}
+
+#[test]
+fn candidate_pins_f411_differs_from_f446() {
+    let f446 = Database::f446re();
+    let f411 = Database::f411re();
+
+    // UART5 is on F446 but not F411; UART5 TX should have candidates on F446
+    // but not on F411.
+    let f446_candidates = f446.candidate_pins("UART5", "TX");
+    let f411_candidates = f411.candidate_pins("UART5", "TX");
+
+    assert!(
+        !f446_candidates.is_empty(),
+        "F446 should have UART5_TX candidates"
+    );
+    assert_eq!(
+        f411_candidates, vec![],
+        "F411 should have no UART5_TX candidates (UART5 not present)"
+    );
+}
+
 // --- Pack parser (CMSIS/CubeMX open pin data XML) -------------------------
 
 const GPIO_MODES_FIXTURE: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="no"?>
