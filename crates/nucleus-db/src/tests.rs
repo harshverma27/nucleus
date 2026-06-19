@@ -106,7 +106,11 @@ fn candidate_pins_returns_empty_for_unmapped_signal() {
     // An unmodeled peripheral/signal combo returns empty, never panics.
     let pins = db.candidate_pins("MADEUP", "SIGNAL");
 
-    assert_eq!(pins, vec![], "unmodeled peripheral+signal should return empty vec");
+    assert_eq!(
+        pins,
+        vec![],
+        "unmodeled peripheral+signal should return empty vec"
+    );
 }
 
 #[test]
@@ -117,7 +121,8 @@ fn candidate_pins_returns_empty_for_unmapped_peripheral() {
     let pins = db.candidate_pins("SPI1", "INVALID");
 
     assert_eq!(
-        pins, vec![],
+        pins,
+        vec![],
         "unmapped signal on known peripheral should return empty vec"
     );
 }
@@ -140,7 +145,8 @@ fn candidate_pins_is_sorted_and_deduplicated() {
     // No duplicates.
     for i in 1..pins.len() {
         assert_ne!(
-            pins[i - 1], pins[i],
+            pins[i - 1],
+            pins[i],
             "candidate pins should be deduplicated, got {pins:?}"
         );
     }
@@ -179,7 +185,8 @@ fn candidate_pins_f411_differs_from_f446() {
         "F446 should have UART5_TX candidates"
     );
     assert_eq!(
-        f411_candidates, vec![],
+        f411_candidates,
+        vec![],
         "F411 should have no UART5_TX candidates (UART5 not present)"
     );
 }
