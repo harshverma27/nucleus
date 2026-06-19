@@ -127,6 +127,48 @@ pub fn check_family(text: &str) -> Result<(CheckReport, Option<UnknownFamily>), 
     Ok((CheckReport { config, conflicts }, family_warning))
 }
 
+/// The outcome of routing one `stm32.toml`: the parsed config, and either the
+/// rendered, fully-pinned TOML text (success) or the conflicts that made
+/// routing fail.
+#[derive(Debug, Clone)]
+pub struct RouteReport {
+    /// The parsed config that was routed.
+    pub config: Config,
+    /// `Ok(rendered_toml)` on a successful route — the original `text`, with
+    /// every newly-routed pin spliced in, comments/formatting/ordering
+    /// elsewhere untouched. `Err(conflicts)` on failure.
+    pub outcome: Result<String, Vec<Conflict>>,
+}
+
+/// Like [`check_family`], but runs the M4 auto-router ([`router::route`])
+/// instead of just validating, and renders a successful route back into TOML
+/// text via `toml_edit` (preserving the original file's comments and
+/// formatting, since only the newly-solved pins are spliced in).
+pub fn route_family(text: &str) -> Result<(RouteReport, Option<UnknownFamily>), ParseError> {
+    let config = config::parse(text)?;
+    let family_warning = database_for(&config.device.family).err();
+    let db = database_for(&config.device.family).unwrap_or_else(|_| Database::f446re());
+
+    let outcome = match router::route(&config, &db) {
+        Ok(assignment) => {
+            // `text` parsed cleanly as our own TOML schema above, so it must
+            // also parse as a generic `toml_edit` document; an empty
+            // assignment leaves `doc` (and thus the rendered string)
+            // unchanged.
+            let mut doc = text
+                .parse::<toml_edit::DocumentMut>()
+                .expect("text already parsed as Config, so it must parse as toml_edit too");
+            for ((instance, key), pin) in &assignment {
+                doc["peripherals"][instance][key] = toml_edit::value(pin.to_string());
+            }
+            Ok(doc.to_string())
+        }
+        Err(conflicts) => Err(conflicts),
+    };
+
+    Ok((RouteReport { config, outcome }, family_warning))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,5 +302,92 @@ channel1 = "PA5"
             .any(|c| c.severity() == Severity::Error));
         // is_ok() should return false because there are errors
         assert!(!report.is_ok());
+    }
+
+    // --- route_family --------------------------------------------------
+
+    #[test]
+    fn route_family_renders_routed_pins_and_preserves_comments() {
+        let text = r#"# top-of-file comment, must survive
+[device]
+family = "STM32F446RE"
+
+# usart2 comment, must survive
+[peripherals.usart2]
+"#;
+        let (report, warning) = route_family(text).unwrap();
+        assert_eq!(warning, None);
+        let rendered = report.outcome.expect("should route");
+
+        // The original comments/structure are untouched.
+        assert!(rendered.contains("# top-of-file comment, must survive"));
+        assert!(rendered.contains("# usart2 comment, must survive"));
+        assert!(rendered.contains("[device]"));
+        assert!(rendered.contains("family = \"STM32F446RE\""));
+
+        // The newly-routed pins are spliced in.
+        assert!(
+            rendered.contains("tx = \"PA2\""),
+            "got rendered:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("rx = \"PA3\""),
+            "got rendered:\n{rendered}"
+        );
+
+        // And the rendered text re-parses to a fully-pinned, clean config.
+        let reparsed = check(&rendered).unwrap();
+        assert!(reparsed.is_ok(), "got {:?}", reparsed.conflicts);
+    }
+
+    #[test]
+    fn route_family_reports_conflicts_on_unroutable_config() {
+        // USART2_TX's only candidate is PA2; pre-occupy it with an unrelated
+        // peripheral signal so routing usart2 fails.
+        let text = r#"[peripherals.tim5]
+channel3 = "PA2"
+
+[peripherals.usart2]
+"#;
+        let (report, warning) = route_family(text).unwrap();
+        assert_eq!(warning, None);
+        let conflicts = report.outcome.expect_err("should be unroutable");
+        assert_eq!(conflicts.len(), 1, "got {conflicts:?}");
+        assert!(matches!(&conflicts[0], Conflict::Unroutable { .. }));
+    }
+
+    #[test]
+    fn route_family_round_trips_an_already_fully_pinned_config() {
+        let text = "[peripherals.usart2]\ntx = \"PA2\"\nrx = \"PA3\"\n";
+        let (report, _warning) = route_family(text).unwrap();
+        let rendered = report.outcome.expect("should route (no-op)");
+
+        // Nothing needed routing, so the rendered text is byte-identical to
+        // the input (re-parsing the same document and never mutating it).
+        assert_eq!(rendered, text);
+    }
+
+    #[test]
+    fn route_family_flags_unknown_family_but_still_routes() {
+        // Mirrors `unknown_family_is_flagged`: an unsupported family produces
+        // a warning, not a hard failure, and routing still proceeds against
+        // the F446RE fallback DB (same discipline as `check_family`).
+        let text = r#"[device]
+family = "STM32H750"
+
+[peripherals.usart2]
+"#;
+        let (report, warning) = route_family(text).unwrap();
+        assert_eq!(warning, Some(UnknownFamily("STM32H750".to_string())));
+        let rendered = report
+            .outcome
+            .expect("should route against the fallback DB");
+        assert!(rendered.contains("tx = \"PA2\""));
+        assert!(rendered.contains("rx = \"PA3\""));
+    }
+
+    #[test]
+    fn route_family_malformed_toml_is_a_parse_error() {
+        assert!(route_family("this is not toml = = =").is_err());
     }
 }

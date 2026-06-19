@@ -564,6 +564,7 @@ dependencies = [
  "nucleus-db",
  "serde",
  "toml",
+ "toml_edit",
 ]
 
 [[package]]
