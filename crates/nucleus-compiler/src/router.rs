@@ -84,7 +84,7 @@ use nucleus_db::{Database, Pin, Port};
 
 use crate::config::Config;
 use crate::model::{self, Role};
-use crate::solver::{self, Conflict};
+use crate::solver::{self, Conflict, Severity};
 
 /// Pins already occupied, mapped to a short owner label for diagnostics
 /// (`"usart2.tx"` for an already-pinned role, `"[[exti]]"` for an EXTI entry).
@@ -181,7 +181,13 @@ pub fn route(
     let (open_roles, mut occupied) = extract_open_roles(config, db)?;
 
     if open_roles.is_empty() {
-        return Ok(BTreeMap::new());
+        // No role needs solving, but the already-pinned config may still
+        // carry a pre-existing conflict `extract_open_roles` doesn't itself
+        // check (e.g. a `PinCollision` between two already-pinned
+        // peripherals). Route through `finalize` with an empty assignment —
+        // a no-op merge — so it gets the same validation pass a non-empty
+        // route would, rather than reporting success unconditionally.
+        return finalize(config, db, BTreeMap::new());
     }
 
     let mut assignment = BTreeMap::new();
@@ -226,7 +232,8 @@ pub fn route_greedy(
     let (open_roles, mut occupied) = extract_open_roles(config, db)?;
 
     if open_roles.is_empty() {
-        return Ok(BTreeMap::new());
+        // See the matching comment in `route` — validate even the no-op case.
+        return finalize(config, db, BTreeMap::new());
     }
 
     let mut assignment = BTreeMap::new();
@@ -254,11 +261,14 @@ pub fn route_greedy(
 /// Merge a complete candidate assignment into a synthetic fully-pinned
 /// [`Config`] and re-run [`solver::solve`]'s clock/DMA/IRQ/pin-collision
 /// checks. A route is only reported successful if this passes, so a
-/// successful [`route`] is valid by construction. Any conflict here is
-/// reported as [`Conflict::Unroutable`], naming the first such conflict's
-/// node and quoting its message as the reason (no information from the
-/// underlying check is lost, but the router's external failure contract
-/// stays uniform).
+/// successful [`route`] is valid by construction. Only `Severity::Error`
+/// conflicts are fatal here — matching `CheckReport::is_ok()`'s own
+/// discipline (e.g. `irq::validate`'s priority-inversion warning can fire on
+/// a peripheral wholly unrelated to what was just routed; that's not the
+/// router's problem to fail on). Any error-level conflict is reported as
+/// [`Conflict::Unroutable`], naming that conflict's node and quoting its
+/// message as the reason (no information from the underlying check is lost,
+/// but the router's external failure contract stays uniform).
 fn finalize(
     config: &Config,
     db: &Database,
@@ -274,7 +284,7 @@ fn finalize(
     }
 
     let conflicts = solver::solve(&synthetic, db);
-    if let Some(first) = conflicts.first() {
+    if let Some(first) = conflicts.iter().find(|c| c.severity() == Severity::Error) {
         let node = conflict_node(first);
         return Err(vec![Conflict::Unroutable {
             node,
@@ -673,6 +683,38 @@ mod tests {
     }
 
     #[test]
+    fn warning_only_conflict_does_not_make_an_already_pinned_config_unroutable() {
+        // No open roles at all (every pin already set); a priority-inversion
+        // warning (dma_priority > irq_priority) is the only conflict
+        // `solve()` would report. `finalize`'s severity filter must not treat
+        // this as fatal -- matches `CheckReport::is_ok()`'s own discipline.
+        let cfg = parse(
+            "[peripherals.usart2]\ntx = \"PA2\"\nrx = \"PA3\"\nirq = true\nirq_priority = 2\ndma = true\ndma_priority = 5\n",
+        );
+        let result = route(&cfg, &db());
+        assert!(result.is_ok(), "got {result:?}");
+        assert_eq!(result.unwrap(), std::collections::BTreeMap::new());
+    }
+
+    #[test]
+    fn fully_pinned_config_with_a_pin_collision_is_unroutable() {
+        // No open roles at all, but spi1's sck and tim2's channel1 collide on
+        // PA5 -- a pre-existing PinCollision that `extract_open_roles` itself
+        // never checks. The empty-open-roles fast path must still run
+        // `finalize`'s validation pass rather than reporting success
+        // unconditionally.
+        let cfg = parse(
+            "[peripherals.spi1]\nmosi = \"PA7\"\nmiso = \"PA6\"\nsck = \"PA5\"\n\n[peripherals.tim2]\nchannel1 = \"PA5\"\n",
+        );
+        let err = route(&cfg, &db()).expect_err("pre-existing pin collision should be unroutable");
+        assert_eq!(err.len(), 1, "got {err:?}");
+        assert!(
+            matches!(&err[0], Conflict::Unroutable { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
     fn optional_roles_are_never_auto_routed() {
         // SPI1 has no `nss` set (optional); route() must fill mosi/miso/sck
         // but never invent an nss pin.
@@ -940,5 +982,22 @@ mod tests {
             result.get(&("usart2".to_string(), "rx".to_string())),
             Some(&Pin::from_str("PA3").unwrap())
         );
+    }
+
+    #[test]
+    fn probe_spi1_candidates() {
+        let d = db();
+        for sig in ["MOSI", "MISO", "SCK"] {
+            let c = d.candidate_pins("SPI1", sig);
+            println!("SPI1 {sig}: {c:?}");
+        }
+        for sig in ["MOSI", "MISO", "SCK"] {
+            let c = d.candidate_pins("SPI3", sig);
+            println!("SPI3 {sig}: {c:?}");
+        }
+        for sig in ["MOSI", "MISO", "SCK"] {
+            let c = d.candidate_pins("SPI2", sig);
+            println!("SPI2 {sig}: {c:?}");
+        }
     }
 }
