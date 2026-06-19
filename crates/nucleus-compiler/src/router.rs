@@ -983,21 +983,4 @@ mod tests {
             Some(&Pin::from_str("PA3").unwrap())
         );
     }
-
-    #[test]
-    fn probe_spi1_candidates() {
-        let d = db();
-        for sig in ["MOSI", "MISO", "SCK"] {
-            let c = d.candidate_pins("SPI1", sig);
-            println!("SPI1 {sig}: {c:?}");
-        }
-        for sig in ["MOSI", "MISO", "SCK"] {
-            let c = d.candidate_pins("SPI3", sig);
-            println!("SPI3 {sig}: {c:?}");
-        }
-        for sig in ["MOSI", "MISO", "SCK"] {
-            let c = d.candidate_pins("SPI2", sig);
-            println!("SPI2 {sig}: {c:?}");
-        }
-    }
 }
