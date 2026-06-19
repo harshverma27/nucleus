@@ -1,0 +1,6 @@
+# M4 happy-path fixture: two peripherals with no pins set; both have a
+# single uncontended candidate per required role, so the router fills them
+# deterministically with no backtracking needed.
+[peripherals.usart2]
+
+[peripherals.spi1]

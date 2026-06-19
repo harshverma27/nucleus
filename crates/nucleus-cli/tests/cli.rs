@@ -21,6 +21,14 @@ fn run_check(name: &str) -> std::process::Output {
         .expect("failed to run nucleus binary")
 }
 
+fn run_route(name: &str) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_nucleus"))
+        .arg("route")
+        .arg(fixture(name))
+        .output()
+        .expect("failed to run nucleus binary")
+}
+
 #[test]
 fn clean_config_exits_zero() {
     let out = run_check("clean.toml");
@@ -472,6 +480,89 @@ fn route_unroutable_config_exits_nonzero_and_writes_no_file() {
     assert!(
         !out_path.exists(),
         "no file should be written on a failed route"
+    );
+}
+
+// ---- M4: golden fixtures for `nucleus route` ---------------------------
+
+#[test]
+fn route_simple_fixture_assigns_pins_deterministically() {
+    // usart2 + spi1, no pins set: each required role has exactly one
+    // uncontended candidate on the F446, so the route is trivial and exact.
+    let out = run_route("route_simple.toml");
+    assert!(
+        out.status.success(),
+        "expected route_simple.toml to route, stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("tx = \"PA2\"")
+            && stdout.contains("rx = \"PA3\"")
+            && stdout.contains("mosi = \"PA7\"")
+            && stdout.contains("miso = \"PA6\"")
+            && stdout.contains("sck = \"PA5\""),
+        "expected routed pins in stdout, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn route_simple_output_passes_a_chained_check() {
+    // Issue #20's explicit "passthrough" acceptance criterion: the routed
+    // output is itself a valid stm32.toml. Route route_simple.toml, write its
+    // stdout to a tempfile, and feed that path straight into `nucleus check`.
+    let routed = run_route("route_simple.toml");
+    assert!(routed.status.success());
+
+    let proj = TempProject::new();
+    let out_path = proj.path().join("routed.toml");
+    std::fs::write(&out_path, &routed.stdout).unwrap();
+
+    let checked = nucleus(&["check".as_ref(), out_path.as_os_str()]);
+    assert!(
+        checked.status.success(),
+        "routed output should pass check, stderr:\n{}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+}
+
+#[test]
+fn route_complex_fixture_is_reproducible() {
+    // Issue #20's "optimal assignment reproducible" criterion: four
+    // uncontended peripheral kinds at once, routed twice, must produce
+    // byte-identical output both times.
+    let first = run_route("route_complex.toml");
+    assert!(
+        first.status.success(),
+        "expected route_complex.toml to route, stderr:\n{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let second = run_route("route_complex.toml");
+    assert!(second.status.success());
+
+    assert_eq!(
+        first.stdout, second.stdout,
+        "routed output must be byte-identical across runs"
+    );
+}
+
+#[test]
+fn route_overconstrained_fixture_exits_nonzero_naming_stuck_role() {
+    // tim5.channel3 pre-occupies PA2, USART2_TX's only candidate -> Unroutable.
+    let out = run_route("route_overconstrained.toml");
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit on an overconstrained config"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("error:")
+            && stderr.contains("unroutable [USART2_TX]")
+            && stderr.contains("PA2")
+            && stderr.contains("tim5.channel3"),
+        "error should name the stuck role and what occupies its candidate, got:\n{stderr}"
     );
 }
 

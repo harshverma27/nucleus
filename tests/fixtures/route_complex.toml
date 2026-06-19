@@ -1,0 +1,10 @@
+# M4 determinism fixture: several peripheral kinds at once, none contending
+# for the same pin, so the router must find a complete optimal assignment —
+# and the same one, byte-for-byte, on every run.
+[peripherals.usart2]
+
+[peripherals.spi1]
+
+[peripherals.i2c1]
+
+[peripherals.usart1]
