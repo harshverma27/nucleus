@@ -1,6 +1,7 @@
 //! The `nucleus` command-line interface — command parsing and dispatch.
 //!
-//! The full surface is live: `check` validates an `stm32.toml`, `init` scaffolds
+//! The full surface is live: `check` validates an `stm32.toml`, `route`
+//! auto-assigns pins for peripherals declared without them, `init` scaffolds
 //! a project, `build` generates HAL init code and drives the cross toolchain,
 //! `flash` programs the board, `lsp` starts the language server over stdio, and
 //! `trace` decodes ITM/SWO and streams events over a WebSocket.
@@ -12,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use nucleus_compiler::{check_family, ParseError, Severity};
+use nucleus_compiler::{check_family, route_family, ParseError, Severity};
 
 use scaffold::Written;
 
@@ -73,6 +74,16 @@ enum Command {
     },
     /// Start the language server over stdio (spawned by the editor extension).
     Lsp,
+    /// Auto-route peripheral instances declared without pins; writes a
+    /// fully-specified stm32.toml (the M4 constraint auto-router).
+    Route {
+        /// Path to the config file (defaults to ./stm32.toml).
+        #[arg(default_value = "stm32.toml")]
+        path: PathBuf,
+        /// Write the routed config to this path instead of stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -90,6 +101,7 @@ fn main() -> ExitCode {
             openocd,
         } => run_trace(&config, ws_port, replay, trace_tcp, openocd),
         Command::Lsp => run_lsp(),
+        Command::Route { path, out } => run_route(&path, out.as_deref()),
     }
 }
 
@@ -267,4 +279,63 @@ fn run_check(path: &Path) -> ExitCode {
 
 fn print_parse_error(path: &Path, err: &ParseError) {
     eprintln!("error: {}: {err}", path.display());
+}
+
+/// Auto-route peripheral instances declared without pins, writing a
+/// fully-specified stm32.toml. Exit code: `0` on a successful route, `1` on
+/// a parse error or an unroutable config (no output is written on failure).
+fn run_route(path: &Path, out: Option<&Path>) -> ExitCode {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) => {
+            eprintln!("error: cannot read {}: {err}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let (report, family_warning) = match route_family(&text) {
+        Ok(result) => result,
+        Err(err) => {
+            print_parse_error(path, &err);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if let Some(warning) = &family_warning {
+        eprintln!("warning: {warning}");
+        eprintln!("         falling back to STM32F446RE; results may be inaccurate.\n");
+    }
+
+    match report.outcome {
+        Ok(rendered) => {
+            match out {
+                Some(out_path) => {
+                    if let Err(err) = std::fs::write(out_path, &rendered) {
+                        eprintln!("error: cannot write {}: {err}", out_path.display());
+                        return ExitCode::FAILURE;
+                    }
+                    println!("{} routed -> {}", path.display(), out_path.display());
+                }
+                None => print!("{rendered}"),
+            }
+            ExitCode::SUCCESS
+        }
+        Err(conflicts) => {
+            let n = conflicts.len();
+            eprintln!(
+                "{}: could not route ({n} conflict{}):\n",
+                path.display(),
+                if n == 1 { "" } else { "s" }
+            );
+            for conflict in &conflicts {
+                let prefix = match conflict.severity() {
+                    Severity::Error => "error",
+                    Severity::Warning => "warning",
+                };
+                eprintln!("  {prefix}: {conflict}");
+            }
+            eprintln!();
+            ExitCode::FAILURE
+        }
+    }
 }

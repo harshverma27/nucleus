@@ -386,6 +386,95 @@ fn init_f411re_project_passes_check_and_builds() {
     assert!(proj.path().join("src/generated/nucleus_init.c").exists());
 }
 
+// ---- M4: `nucleus route` -----------------------------------------------
+
+#[test]
+fn route_assigns_pins_and_prints_to_stdout() {
+    let proj = TempProject::new();
+    let toml = proj.path().join("stm32.toml");
+    std::fs::write(&toml, "[peripherals.usart2]\n").unwrap();
+
+    let out = nucleus(&["route".as_ref(), toml.as_os_str()]);
+    assert!(
+        out.status.success(),
+        "expected route to succeed, stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("tx = \"PA2\"") && stdout.contains("rx = \"PA3\""),
+        "expected routed pins in stdout, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn route_writes_to_out_path_and_not_stdout() {
+    let proj = TempProject::new();
+    let toml = proj.path().join("stm32.toml");
+    std::fs::write(&toml, "[peripherals.usart2]\n").unwrap();
+    let out_path = proj.path().join("routed.toml");
+
+    let out = nucleus(&[
+        "route".as_ref(),
+        toml.as_os_str(),
+        "--out".as_ref(),
+        out_path.as_os_str(),
+    ]);
+    assert!(
+        out.status.success(),
+        "expected route to succeed, stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("tx = \"PA2\""),
+        "routed TOML should go to --out, not stdout, got stdout:\n{stdout}"
+    );
+
+    let written = std::fs::read_to_string(&out_path).unwrap();
+    assert!(
+        written.contains("tx = \"PA2\"") && written.contains("rx = \"PA3\""),
+        "expected routed pins in {}, got:\n{written}",
+        out_path.display()
+    );
+}
+
+#[test]
+fn route_unroutable_config_exits_nonzero_and_writes_no_file() {
+    let proj = TempProject::new();
+    let toml = proj.path().join("stm32.toml");
+    // USART2_TX's only candidate is PA2; pre-occupy it so routing fails.
+    std::fs::write(
+        &toml,
+        "[peripherals.tim5]\nchannel3 = \"PA2\"\n\n[peripherals.usart2]\n",
+    )
+    .unwrap();
+    let out_path = proj.path().join("routed.toml");
+
+    let out = nucleus(&[
+        "route".as_ref(),
+        toml.as_os_str(),
+        "--out".as_ref(),
+        out_path.as_os_str(),
+    ]);
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit on unroutable config"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("error:"),
+        "expected an error:-prefixed conflict, got stderr:\n{stderr}"
+    );
+    assert!(
+        !out_path.exists(),
+        "no file should be written on a failed route"
+    );
+}
+
 #[test]
 fn init_rejects_unknown_board() {
     let proj = TempProject::new();
