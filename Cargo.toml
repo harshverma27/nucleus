@@ -7,6 +7,7 @@ members = [
     "crates/nucleus-lsp",
     "crates/nucleus-itm",
     "crates/nucleus-trace",
+    "crates/nucleus-hil",
 ]
 
 [workspace.package]
