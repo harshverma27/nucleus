@@ -239,7 +239,7 @@ fn take_quoted_string(s: &str) -> Result<(String, &str), String> {
         .ok_or_else(|| "expected a quoted string".to_string())?;
     if delim != '"' && delim != '\'' {
         return Err(format!(
-            "expected a quoted string starting with '\"' or ' \'', got {s:?}"
+            "expected a quoted string starting with '\"' or '\'', got {s:?}"
         ));
     }
 
