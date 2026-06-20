@@ -311,7 +311,8 @@ fn conflict_node(c: &Conflict) -> String {
         Conflict::ClockConstraint { node, .. }
         | Conflict::DmaCollision { first: node, .. }
         | Conflict::IrqConflict { node, .. }
-        | Conflict::Unroutable { node, .. } => node.clone(),
+        | Conflict::Unroutable { node, .. }
+        | Conflict::InvalidTest { node, .. } => node.clone(),
     }
 }
 

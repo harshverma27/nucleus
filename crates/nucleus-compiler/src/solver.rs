@@ -113,6 +113,15 @@ pub enum Conflict {
         /// Human-readable explanation; also the `Display` body.
         reason: String,
     },
+    /// A `[[test]]` block with an unparseable assertion string, or one that
+    /// references a pin/peripheral the resolved family doesn't have. Always
+    /// fatal (an unrunnable test can never pass).
+    InvalidTest {
+        /// The test's `name` field, for span mapping and dedup.
+        node: String,
+        /// Human-readable explanation; also the `Display` body.
+        reason: String,
+    },
 }
 
 impl Conflict {
@@ -208,6 +217,9 @@ impl fmt::Display for Conflict {
             }
             Conflict::Unroutable { node, reason } => {
                 write!(f, "unroutable [{node}]: {reason}")
+            }
+            Conflict::InvalidTest { node, reason } => {
+                write!(f, "invalid test [{node}]: {reason}")
             }
         }
     }
@@ -315,6 +327,63 @@ pub fn solve(config: &Config, db: &Database) -> Vec<Conflict> {
     // IRQ/NVIC verification (M3) runs last.
     let irq_map = crate::irq_map_for(&config.device.family);
     conflicts.extend(crate::irq::validate(config, &irq_map));
+
+    // Declarative test validation (M6) depends on nothing else and nothing
+    // else depends on it, so it runs last in the deterministic order.
+    // `config.test` is a `Vec`, not a `BTreeMap` — iterate in document order.
+    for test in &config.test {
+        let assertion = match crate::assertion::parse(&test.assertion) {
+            Ok(assertion) => assertion,
+            Err(reason) => {
+                conflicts.push(Conflict::InvalidTest {
+                    node: test.name.clone(),
+                    reason,
+                });
+                continue;
+            }
+        };
+
+        let subject_invalid = match &assertion {
+            crate::assertion::Assertion::PinToggles { pin, .. }
+            | crate::assertion::Assertion::PinState { pin, .. } => {
+                if Pin::from_str(pin).is_err() {
+                    Some(format!("'{pin}' is not a valid pin name"))
+                } else {
+                    None
+                }
+            }
+            crate::assertion::Assertion::UartEcho { instance, .. } => {
+                let peripheral = model::peripheral_name(instance);
+                if !db.has_peripheral(&peripheral) {
+                    Some(format!(
+                        "peripheral {instance} is not available on this family"
+                    ))
+                } else {
+                    None
+                }
+            }
+            crate::assertion::Assertion::ItmEvent { .. } => None,
+        };
+
+        if let Some(reason) = subject_invalid {
+            conflicts.push(Conflict::InvalidTest {
+                node: test.name.clone(),
+                reason,
+            });
+            continue;
+        }
+
+        if let Some(backend) = &test.backend {
+            if backend != "qemu" && backend != "hardware" && backend != "both" {
+                conflicts.push(Conflict::InvalidTest {
+                    node: test.name.clone(),
+                    reason: format!(
+                        "backend must be \"qemu\", \"hardware\", or \"both\", got {backend:?}"
+                    ),
+                });
+            }
+        }
+    }
 
     conflicts
 }
@@ -626,5 +695,132 @@ rx = "PA3"
             display.contains("all candidate pins are occupied"),
             "display: {display}"
         );
+    }
+
+    #[test]
+    fn invalid_test_display_format() {
+        // `InvalidTest`'s Display output must include both node and reason.
+        let conflict = Conflict::InvalidTest {
+            node: "uart2_echo".to_string(),
+            reason: "'NOTAPIN' is not a valid pin name".to_string(),
+        };
+        let display = format!("{}", conflict);
+        assert!(display.contains("invalid test"), "display: {display}");
+        assert!(display.contains("uart2_echo"), "display: {display}");
+        assert!(
+            display.contains("'NOTAPIN' is not a valid pin name"),
+            "display: {display}"
+        );
+    }
+
+    #[test]
+    fn valid_test_referencing_real_pin_has_no_conflict() {
+        let conflicts = solve_toml(
+            r#"
+[[test]]
+name = "blink_check"
+assertion = "pin PA5 toggles at 1Hz ±5%"
+"#,
+        );
+        assert!(
+            !conflicts
+                .iter()
+                .any(|c| matches!(c, Conflict::InvalidTest { .. })),
+            "{conflicts:?}"
+        );
+    }
+
+    #[test]
+    fn unparseable_assertion_yields_invalid_test() {
+        let conflicts = solve_toml(
+            r#"
+[[test]]
+name = "garbage_test"
+assertion = "this is not an assertion at all"
+"#,
+        );
+        let invalid: Vec<&Conflict> = conflicts
+            .iter()
+            .filter(|c| matches!(c, Conflict::InvalidTest { .. }))
+            .collect();
+        assert_eq!(invalid.len(), 1, "{conflicts:?}");
+        let display = format!("{}", invalid[0]);
+        assert!(display.contains("garbage_test"), "display: {display}");
+    }
+
+    #[test]
+    fn pin_assertion_with_invalid_pin_name_yields_invalid_test() {
+        let conflicts = solve_toml(
+            r#"
+[[test]]
+name = "bad_pin_test"
+assertion = "pin NOTAPIN toggles at 1Hz ±5%"
+"#,
+        );
+        let invalid: Vec<&Conflict> = conflicts
+            .iter()
+            .filter(|c| matches!(c, Conflict::InvalidTest { .. }))
+            .collect();
+        assert_eq!(invalid.len(), 1, "{conflicts:?}");
+    }
+
+    #[test]
+    fn uart_echo_with_unavailable_peripheral_yields_invalid_test() {
+        let conflicts = solve_toml(
+            r#"
+[[test]]
+name = "fake_periph_test"
+assertion = "FAKEPERIPH echoes \"x\" within 10ms"
+"#,
+        );
+        let invalid: Vec<&Conflict> = conflicts
+            .iter()
+            .filter(|c| matches!(c, Conflict::InvalidTest { .. }))
+            .collect();
+        assert_eq!(invalid.len(), 1, "{conflicts:?}");
+        let display = format!("{}", invalid[0]);
+        assert!(display.contains("FAKEPERIPH"), "display: {display}");
+    }
+
+    #[test]
+    fn invalid_backend_value_yields_invalid_test() {
+        let conflicts = solve_toml(
+            r#"
+[[test]]
+name = "bad_backend_test"
+assertion = "pin PA5 is high within 10ms"
+backend = "emulator"
+"#,
+        );
+        let invalid: Vec<&Conflict> = conflicts
+            .iter()
+            .filter(|c| matches!(c, Conflict::InvalidTest { .. }))
+            .collect();
+        assert_eq!(invalid.len(), 1, "{conflicts:?}");
+        let display = format!("{}", invalid[0]);
+        assert!(display.contains("backend"), "display: {display}");
+        assert!(display.contains("emulator"), "display: {display}");
+    }
+
+    #[test]
+    fn one_valid_one_invalid_test_yields_exactly_one_invalid_test_conflict() {
+        let conflicts = solve_toml(
+            r#"
+[[test]]
+name = "good_test"
+assertion = "pin PA5 is high within 10ms"
+
+[[test]]
+name = "bad_test"
+assertion = "not a real assertion"
+"#,
+        );
+        let invalid: Vec<&Conflict> = conflicts
+            .iter()
+            .filter(|c| matches!(c, Conflict::InvalidTest { .. }))
+            .collect();
+        assert_eq!(invalid.len(), 1, "{conflicts:?}");
+        let display = format!("{}", invalid[0]);
+        assert!(display.contains("bad_test"), "display: {display}");
     }
 }
