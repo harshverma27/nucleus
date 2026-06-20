@@ -22,6 +22,7 @@ use nucleus_db::dma::DmaMap;
 use nucleus_db::irq::IrqMap;
 use nucleus_db::Database;
 
+pub use assertion::Assertion;
 pub use clocks::{PeripheralFreq, ResolvedClocks};
 pub use codegen::{generate, Generated};
 pub use config::{Config, ParseError};
@@ -168,6 +169,76 @@ pub fn route_family(text: &str) -> Result<(RouteReport, Option<UnknownFamily>), 
     };
 
     Ok((RouteReport { config, outcome }, family_warning))
+}
+
+/// Which backend(s) a [`CompiledTest`] should run on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendSelect {
+    Qemu,
+    Hardware,
+    Both,
+}
+
+/// One `[[test]]` block, parsed and validated: ready for `nucleus-hil` to
+/// execute. Never carries raw TOML or [`Config`] — [`test_plan`] is the only
+/// place a [`Conflict::InvalidTest`] can still occur; once you have a
+/// `CompiledTest` it is guaranteed runnable (the assertion parsed, its pin/
+/// peripheral reference exists on the resolved family, its backend value is
+/// one of the three recognized strings).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledTest {
+    pub name: String,
+    pub assertion: Assertion,
+    pub timeout: std::time::Duration,
+    pub backend: BackendSelect,
+}
+
+/// Parse and validate every `[[test]]` block in `text`, returning the
+/// runnable plan on success or the conflicts ([`Conflict::InvalidTest`] plus
+/// any other conflict the config has — an unrunnable peripheral wiring is
+/// just as fatal to a test as a bad assertion) that block it.
+///
+/// Reuses [`solver::solve`]'s validation rather than re-validating: a
+/// [`CompiledTest`] is only ever produced when the *entire* config — not
+/// just its `[[test]]` blocks — has zero [`Severity::Error`] conflicts, so a
+/// test plan can never be handed to `nucleus-hil` for a config that
+/// wouldn't even build.
+pub fn test_plan(text: &str) -> Result<Result<Vec<CompiledTest>, Vec<Conflict>>, ParseError> {
+    let config = config::parse(text)?;
+    let db = database_for(&config.device.family).unwrap_or_else(|_| Database::f446re());
+    let conflicts = solver::solve(&config, &db);
+
+    if conflicts.iter().any(|c| c.severity() == Severity::Error) {
+        return Ok(Err(conflicts));
+    }
+
+    let compiled = config
+        .test
+        .iter()
+        .map(|t| {
+            let assertion = assertion::parse(&t.assertion).expect(
+                "solve() already validated every config.test entry's assertion string; \
+                 a parse failure here would have produced an InvalidTest conflict above",
+            );
+            let backend = match t.backend.as_deref() {
+                None | Some("both") => BackendSelect::Both,
+                Some("qemu") => BackendSelect::Qemu,
+                Some("hardware") => BackendSelect::Hardware,
+                Some(other) => unreachable!(
+                    "solve() already validated config.test backend values; \
+                     {other:?} would have produced an InvalidTest conflict above"
+                ),
+            };
+            CompiledTest {
+                name: t.name.clone(),
+                assertion,
+                timeout: std::time::Duration::from_millis(t.timeout_ms),
+                backend,
+            }
+        })
+        .collect();
+
+    Ok(Ok(compiled))
 }
 
 #[cfg(test)]
@@ -390,5 +461,165 @@ family = "STM32H750"
     #[test]
     fn route_family_malformed_toml_is_a_parse_error() {
         assert!(route_family("this is not toml = = =").is_err());
+    }
+
+    // --- test_plan ------------------------------------------------------
+
+    #[test]
+    fn test_plan_returns_one_compiled_test_for_a_valid_block() {
+        let plan = test_plan(
+            r#"
+[device]
+family = "STM32F446RE"
+
+[[test]]
+name = "t1"
+assertion = "pin PA5 is high within 10ms"
+"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].name, "t1");
+        assert!(matches!(
+            &plan[0].assertion,
+            Assertion::PinState { pin, level: true, within }
+                if pin == "PA5" && *within == std::time::Duration::from_millis(10)
+        ));
+    }
+
+    #[test]
+    fn test_plan_reports_invalid_test_for_garbage_assertion() {
+        let conflicts = test_plan(
+            r#"
+[[test]]
+name = "bad"
+assertion = "this is not an assertion at all"
+"#,
+        )
+        .unwrap()
+        .unwrap_err();
+        assert!(
+            conflicts
+                .iter()
+                .any(|c| matches!(c, Conflict::InvalidTest { .. })),
+            "got {conflicts:?}"
+        );
+    }
+
+    #[test]
+    fn test_plan_falls_back_to_f446_db_for_unknown_family() {
+        let plan = test_plan(
+            r#"
+[device]
+family = "STM32H750"
+
+[[test]]
+name = "t1"
+assertion = "pin PA5 is high within 10ms"
+"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(plan.len(), 1);
+    }
+
+    #[test]
+    fn test_plan_maps_backend_none_to_both() {
+        let plan = test_plan(
+            r#"
+[[test]]
+name = "t1"
+assertion = "pin PA5 is high within 10ms"
+"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(plan[0].backend, BackendSelect::Both);
+    }
+
+    #[test]
+    fn test_plan_maps_backend_qemu() {
+        let plan = test_plan(
+            r#"
+[[test]]
+name = "t1"
+assertion = "pin PA5 is high within 10ms"
+backend = "qemu"
+"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(plan[0].backend, BackendSelect::Qemu);
+    }
+
+    #[test]
+    fn test_plan_maps_backend_hardware() {
+        let plan = test_plan(
+            r#"
+[[test]]
+name = "t1"
+assertion = "pin PA5 is high within 10ms"
+backend = "hardware"
+"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(plan[0].backend, BackendSelect::Hardware);
+    }
+
+    #[test]
+    fn test_plan_maps_backend_both_explicit() {
+        let plan = test_plan(
+            r#"
+[[test]]
+name = "t1"
+assertion = "pin PA5 is high within 10ms"
+backend = "both"
+"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(plan[0].backend, BackendSelect::Both);
+    }
+
+    #[test]
+    fn test_plan_converts_timeout_ms_to_duration() {
+        let plan = test_plan(
+            r#"
+[[test]]
+name = "t1"
+assertion = "pin PA5 is high within 10ms"
+timeout_ms = 250
+"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(plan[0].timeout, std::time::Duration::from_millis(250));
+    }
+
+    #[test]
+    fn test_plan_fails_on_unrelated_conflict_even_with_valid_test() {
+        let conflicts = test_plan(
+            r#"
+[peripherals.spi1]
+mosi = "PA7"
+miso = "PA6"
+sck = "PA5"
+
+[peripherals.tim2]
+channel1 = "PA5"
+
+[[test]]
+name = "t1"
+assertion = "pin PA5 is high within 10ms"
+"#,
+        )
+        .unwrap()
+        .unwrap_err();
+        assert!(!conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::InvalidTest { .. })));
+        assert!(conflicts.iter().any(|c| c.severity() == Severity::Error));
     }
 }
