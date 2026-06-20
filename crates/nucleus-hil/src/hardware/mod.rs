@@ -20,7 +20,6 @@ use nucleus_compiler::CheckReport;
 use nucleus_db::Port;
 use nucleus_itm::{Decoder, Packet};
 use nucleus_trace::source::openocd_enable;
-use nucleus_trace::Source;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -90,6 +89,31 @@ async fn wait_for_port(addr: &str, child: &mut Child) -> Result<(), HilError> {
     }
 }
 
+/// Connect to `addr`, retrying on `ConnectionRefused` for up to 2 seconds.
+///
+/// OpenOCD's `tpiu config internal :PORT ...` telnet command only binds the
+/// trace TCP listener *after* it finishes processing the command — the
+/// `write_all`/`flush` in [`openocd_enable`] returns as soon as the bytes hit
+/// the socket, not once OpenOCD has acted on them, so connecting immediately
+/// afterward loses this race and gets `ConnectionRefused` (confirmed
+/// empirically against a real NUCLEO-F411RE; never observed against QEMU,
+/// which has no analogous trace-port setup step).
+async fn connect_with_retry(addr: &str) -> std::io::Result<TcpStream> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match TcpStream::connect(addr).await {
+            Ok(stream) => return Ok(stream),
+            Err(err)
+                if err.kind() == std::io::ErrorKind::ConnectionRefused
+                    && Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
 /// Send one command to OpenOCD's telnet console. Used for `reset halt` /
 /// `reset run` — [`openocd_enable`] covers the TPIU/ITM setup commands.
 async fn telnet_send(addr: &str, cmd: &str) -> Result<(), HilError> {
@@ -97,6 +121,16 @@ async fn telnet_send(addr: &str, cmd: &str) -> Result<(), HilError> {
     conn.write_all(cmd.as_bytes()).await?;
     conn.write_all(b"\r\n").await?;
     conn.flush().await?;
+    // A short settle delay after each blocking telnet command, before this
+    // connection drops and/or the next command fires. Without it, the SWO
+    // trace pipeline below silently received zero bytes end-to-end on real
+    // hardware (every command appeared to succeed — no error from OpenOCD —
+    // yet no SWIT packet ever arrived); adding this delay here and after
+    // `openocd_enable` made it reliable. Root cause not fully isolated
+    // (reset settling on real silicon vs. a connection-drop race in
+    // OpenOCD's command dispatcher are both plausible); confirmed empirically
+    // against a real NUCLEO-F411RE, below the noise floor on QEMU.
+    tokio::time::sleep(Duration::from_millis(300)).await;
     Ok(())
 }
 
@@ -142,11 +176,27 @@ impl HardwareBackend {
     /// `QemuBackend::register`'s halt/read/resume dance — OpenOCD's gdbserver
     /// only answers `m` queries while the target is halted.
     fn read_memory(&mut self, addr: u32) -> Result<u32, HilError> {
-        let stub = self
-            .stub
-            .as_mut()
-            .ok_or_else(|| HilError::Protocol("backend not started".to_string()))?;
+        if !self.started {
+            return Err(HilError::Protocol("backend not started".to_string()));
+        }
         let runtime = self.runtime.as_ref().expect("runtime set in start()");
+        if self.stub.is_none() {
+            // Connected lazily, on first actual register/pin read, rather
+            // than eagerly in `start()` — opening the gdb-port connection
+            // immediately after `reset run` raced OpenOCD's own SWO-capture
+            // loop on real hardware (`Error: attempted 'gdb' connection
+            // rejected` in its log, immediately followed by zero ITM bytes
+            // ever arriving), confirmed empirically against a NUCLEO-F411RE.
+            // A test that never calls `pin`/`register`/`sample` now never
+            // opens this connection at all.
+            let gdb_addr = format!("127.0.0.1:{}", self.gdb_port);
+            let stub = match runtime.block_on(GdbStub::connect(&gdb_addr)) {
+                Ok(stub) => stub,
+                Err(err) => return Err(self.record_failure(err)),
+            };
+            self.stub = Some(stub);
+        }
+        let stub = self.stub.as_mut().expect("just set above");
         let result = runtime.block_on(async {
             stub.interrupt().await?;
             let result = stub.read_memory(addr, 4).await;
@@ -230,7 +280,6 @@ impl Backend for HardwareBackend {
 
         let telnet_addr = format!("127.0.0.1:{}", self.telnet_port);
         let trace_addr = format!("127.0.0.1:{}", self.trace_port);
-        let gdb_addr = format!("127.0.0.1:{}", self.gdb_port);
         let trace_port = self.trace_port;
 
         // No PLL is configured on a freshly flashed board until the
@@ -244,31 +293,38 @@ impl Backend for HardwareBackend {
             .runtime
             .get_or_insert_with(|| tokio::runtime::Runtime::new().expect("tokio runtime"));
 
-        let result: Result<(Box<dyn AsyncRead + Unpin + Send>, GdbStub), HilError> = runtime
-            .block_on(async {
-                wait_for_port(&telnet_addr, &mut openocd).await?;
-                // Halt before configuring TPIU/ITM and opening the trace
-                // socket, then resume only once a reader is attached —
-                // bytes written to a not-yet-connected SWO trace port are
-                // dropped, not buffered (confirmed empirically).
-                telnet_send(&telnet_addr, "reset halt").await?;
-                openocd_enable(&telnet_addr, trace_port, cpu_hz, swo_hz)
+        let result: Result<Box<dyn AsyncRead + Unpin + Send>, HilError> = runtime.block_on(async {
+            wait_for_port(&telnet_addr, &mut openocd).await?;
+            // Halt before configuring TPIU/ITM and opening the trace
+            // socket, then resume only once a reader is attached —
+            // bytes written to a not-yet-connected SWO trace port are
+            // dropped, not buffered (confirmed empirically).
+            telnet_send(&telnet_addr, "reset halt").await?;
+            openocd_enable(&telnet_addr, trace_port, cpu_hz, swo_hz)
+                .await
+                .map_err(HilError::Io)?;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let trace_reader: Box<dyn AsyncRead + Unpin + Send> = Box::new(
+                connect_with_retry(&trace_addr)
                     .await
-                    .map_err(HilError::Io)?;
-                let trace_reader = Source::Tcp(trace_addr.clone())
-                    .open()
-                    .await
-                    .map_err(HilError::Io)?;
-                telnet_send(&telnet_addr, "reset run").await?;
-                let stub = GdbStub::connect(&gdb_addr).await?;
-                Ok((trace_reader, stub))
-            });
+                    .map_err(HilError::Io)?,
+            );
+            // `itm ports on` accepting the trace TCP connection doesn't
+            // imply the TPIU/DBGMCU trace-enable bits have actually
+            // latched in hardware yet — resuming immediately on a real
+            // board occasionally resumes before that lands, dropping the
+            // firmware's very first SWIT packet (confirmed empirically
+            // against a NUCLEO-F411RE; below the noise floor on QEMU's
+            // SWO emulation, which has no equivalent hardware latency).
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            telnet_send(&telnet_addr, "reset run").await?;
+            Ok(trace_reader)
+        });
 
         match result {
-            Ok((trace_reader, stub)) => {
+            Ok(trace_reader) => {
                 self.openocd = Some(openocd);
                 self.trace_reader = Some(trace_reader);
-                self.stub = Some(stub);
                 self.started = true;
                 self.start_time = Some(Instant::now());
                 Ok(())
@@ -416,6 +472,23 @@ impl Backend for HardwareBackend {
     }
 }
 
+/// Kills the spawned `openocd` child if `finish()` was never reached — e.g. a
+/// test panics between `start()` and `finish()` (an `.expect()` on a failed
+/// observation call, for instance). Without this, a panicking test leaks an
+/// `openocd` process that holds the ST-Link exclusively and the fixed tcl
+/// port 6666, so every subsequent run (this process or the next) fails to
+/// even spawn its own `openocd` — confirmed empirically: a single panicking
+/// hardware test left exactly this orphan behind and broke every later
+/// attempt until it was killed by hand.
+impl Drop for HardwareBackend {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.openocd.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,11 +530,9 @@ channel1 = "PA5"
             Box::new(connect_result.unwrap())
         });
 
-        let mut backend = HardwareBackend {
-            trace_reader: Some(trace_reader),
-            runtime: Some(runtime),
-            ..Default::default()
-        };
+        let mut backend = HardwareBackend::default();
+        backend.trace_reader = Some(trace_reader);
+        backend.runtime = Some(runtime);
 
         let first = backend
             .await_itm_event(Duration::from_millis(500))
@@ -483,11 +554,9 @@ channel1 = "PA5"
 
     #[test]
     fn finish_reports_failed_not_completed_after_a_recorded_failure() {
-        let mut backend = HardwareBackend {
-            started: true,
-            start_time: Some(Instant::now()),
-            ..Default::default()
-        };
+        let mut backend = HardwareBackend::default();
+        backend.started = true;
+        backend.start_time = Some(Instant::now());
         backend.record_failure(HilError::Protocol("board disconnected mid-run".to_string()));
         let result = backend.finish();
         assert!(matches!(result.status, RunStatus::Failed { .. }));
@@ -495,11 +564,9 @@ channel1 = "PA5"
 
     #[test]
     fn record_failure_ignores_expected_not_observable_gaps() {
-        let mut backend = HardwareBackend {
-            started: true,
-            start_time: Some(Instant::now()),
-            ..Default::default()
-        };
+        let mut backend = HardwareBackend::default();
+        backend.started = true;
+        backend.start_time = Some(Instant::now());
         backend.record_failure(HilError::NotObservable {
             peripheral: "SAI1".to_string(),
         });

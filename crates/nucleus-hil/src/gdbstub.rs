@@ -8,10 +8,31 @@
 //! `nucleus-itm`'s zero-extra-dependency, never-panic posture: malformed
 //! replies always become [`HilError::Protocol`], never a panic.
 
+use std::time::Duration;
+
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::backend::HilError;
+
+/// Bound on every blocking read in this module. Without it, a stub that
+/// never replies (e.g. a GDB-RSP server that doesn't honor a bare interrupt
+/// byte the way this minimal client assumes) hangs the calling test forever
+/// instead of surfacing a [`HilError`] — confirmed empirically against real
+/// OpenOCD/NUCLEO-F411RE hardware, where [`GdbStub::interrupt`]'s stop-reply
+/// read never returned.
+const READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+async fn with_timeout<T>(
+    fut: impl std::future::Future<Output = std::io::Result<T>>,
+) -> Result<T, HilError> {
+    match tokio::time::timeout(READ_TIMEOUT, fut).await {
+        Ok(result) => Ok(result?),
+        Err(_) => Err(HilError::Protocol(format!(
+            "timed out after {READ_TIMEOUT:?} waiting for a reply"
+        ))),
+    }
+}
 
 /// A connected GDB Remote Serial Protocol session.
 pub struct GdbStub {
@@ -69,7 +90,7 @@ impl GdbStub {
         // The stub acks with '+' before sending its reply; tolerate either
         // ordering/absence rather than failing on a strict ack requirement.
         let mut ack = [0u8; 1];
-        self.conn.read_exact(&mut ack).await?;
+        with_timeout(self.conn.read_exact(&mut ack)).await?;
         if ack[0] != b'+' {
             return Err(HilError::Protocol(format!(
                 "expected '+' ack, got {:?}",
@@ -82,7 +103,7 @@ impl GdbStub {
     async fn read_packet(&mut self) -> Result<String, HilError> {
         let mut byte = [0u8; 1];
         loop {
-            self.conn.read_exact(&mut byte).await?;
+            with_timeout(self.conn.read_exact(&mut byte)).await?;
             if byte[0] == b'$' {
                 break;
             }
@@ -90,7 +111,7 @@ impl GdbStub {
 
         let mut body = Vec::new();
         loop {
-            self.conn.read_exact(&mut byte).await?;
+            with_timeout(self.conn.read_exact(&mut byte)).await?;
             if byte[0] == b'#' {
                 break;
             }
@@ -100,7 +121,7 @@ impl GdbStub {
         // checksum still yields a typed Protocol error downstream if the body
         // doesn't parse, which is the behavior that matters.
         let mut checksum = [0u8; 2];
-        self.conn.read_exact(&mut checksum).await?;
+        with_timeout(self.conn.read_exact(&mut checksum)).await?;
         // Ack the reply.
         self.conn.write_all(b"+").await?;
         self.conn.flush().await?;
