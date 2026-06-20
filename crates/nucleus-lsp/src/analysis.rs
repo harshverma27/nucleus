@@ -579,7 +579,8 @@ mod tests {
         let text = "[device]\nfamily = \"STM32F446RE\"\n\n[peripherals.spi1]\nmosi = \"PA7\"\nmiso = \"PA6\"\nsck = \"PA5\"\n";
         let conflict = Conflict::Unroutable {
             node: "SPI1".to_string(),
-            reason: "No valid pin assignment found for SPI1_MOSI given current constraints".to_string(),
+            reason: "No valid pin assignment found for SPI1_MOSI given current constraints"
+                .to_string(),
         };
         let name_to_key: HashMap<String, String> = vec![("SPI1".to_string(), "spi1".to_string())]
             .into_iter()
@@ -611,7 +612,10 @@ mod tests {
         // With no header match and no pin match, should fall back to whole_first_line.
         let span = &spans[0];
         let underlined_text = &text[span.clone()];
-        assert_eq!(underlined_text, "[device]", "expected fallback to first line, got: {underlined_text}");
+        assert_eq!(
+            underlined_text, "[device]",
+            "expected fallback to first line, got: {underlined_text}"
+        );
     }
 
     #[test]
