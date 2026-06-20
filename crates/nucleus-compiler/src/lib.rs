@@ -7,6 +7,7 @@
 //! Phase 2 ships the parser and the constraint solver (four conflict classes).
 //! HAL code generation lands in Phase 3.
 
+pub mod assertion;
 pub mod clocks;
 pub mod codegen;
 pub mod config;

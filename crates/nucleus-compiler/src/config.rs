@@ -37,6 +37,9 @@ pub struct Config {
     /// `[[exti]]` entries — external interrupt pin definitions.
     #[serde(default)]
     pub exti: Vec<ExtiPin>,
+    /// `[[test]]` entries — declarative HIL test cases (M6).
+    #[serde(default)]
+    pub test: Vec<TestCase>,
 }
 
 /// The `[device]` section.
@@ -167,6 +170,22 @@ pub struct ExtiPin {
     pub priority: Option<u8>,
 }
 
+/// One `[[test]]` entry — a declarative HIL assertion (M6).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename = "test")]
+pub struct TestCase {
+    pub name: String,
+    pub assertion: String,
+    #[serde(default = "default_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default)]
+    pub backend: Option<String>, // "qemu" | "hardware" | "both"; None = both
+}
+
+fn default_timeout_ms() -> u64 {
+    1000
+}
+
 /// Error returned when `stm32.toml` text is not valid TOML or violates the schema.
 #[derive(Debug)]
 pub struct ParseError(toml::de::Error);
@@ -265,5 +284,76 @@ pin = "PB1"
         assert_eq!(cfg.exti[0].priority, Some(5));
         assert_eq!(cfg.exti[1].pin, "PB1");
         assert_eq!(cfg.exti[1].priority, None);
+    }
+
+    #[test]
+    fn parses_minimal_test_block() {
+        let cfg = parse(
+            r#"
+[[test]]
+name = "uart2_echo"
+assertion = "UART2 echoes 'ping' within 10ms"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.test.len(), 1);
+        assert_eq!(cfg.test[0].name, "uart2_echo");
+        assert_eq!(cfg.test[0].assertion, "UART2 echoes 'ping' within 10ms");
+        assert_eq!(cfg.test[0].timeout_ms, 1000);
+        assert_eq!(cfg.test[0].backend, None);
+    }
+
+    #[test]
+    fn parses_fully_specified_test_block() {
+        let cfg = parse(
+            r#"
+[[test]]
+name = "uart2_echo"
+assertion = "UART2 echoes 'ping' within 10ms"
+timeout_ms = 100
+backend = "both"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.test.len(), 1);
+        assert_eq!(cfg.test[0].name, "uart2_echo");
+        assert_eq!(cfg.test[0].assertion, "UART2 echoes 'ping' within 10ms");
+        assert_eq!(cfg.test[0].timeout_ms, 100);
+        assert_eq!(cfg.test[0].backend, Some("both".to_string()));
+    }
+
+    #[test]
+    fn rejects_unknown_field_in_test_block() {
+        let result = parse(
+            r#"
+[[test]]
+name = "uart2_echo"
+assertion = "UART2 echoes 'ping' within 10ms"
+bogus = 1
+"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_multiple_test_blocks_in_document_order() {
+        let cfg = parse(
+            r#"
+[[test]]
+name = "first"
+assertion = "pin PA5 is high within 10ms"
+
+[[test]]
+name = "second"
+assertion = "pin PA6 is low within 20ms"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.test.len(), 2);
+        assert_eq!(cfg.test[0].name, "first");
+        assert_eq!(cfg.test[1].name, "second");
     }
 }
