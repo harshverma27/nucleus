@@ -242,6 +242,10 @@ fn conflict_spans(
                 .or_else(|| find_pin_anywhere(text, node)),
             text,
         ),
+        // An invalid test's `node` is the `[[test]]` block's `name` field
+        // (never a peripheral DB name) — underline its quoted value anywhere
+        // in the document.
+        Conflict::InvalidTest { node, .. } => single(find_pin_anywhere(text, node), text),
     }
 }
 
@@ -301,10 +305,52 @@ fn find_pin_anywhere(text: &str, pin_str: &str) -> Option<Range<usize>> {
     find_quoted(text, 0..text.len(), pin_str)
 }
 
+/// The byte range of the line (excluding its trailing newline) containing `offset`.
+fn current_line(text: &str, offset: usize) -> Range<usize> {
+    let offset = offset.min(text.len());
+    let start = text[..offset].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let end = text[offset..]
+        .find('\n')
+        .map(|rel| offset + rel)
+        .unwrap_or(text.len());
+    start..end
+}
+
+/// Whether the line at `offset`, trimmed, starts with `key` followed by `=`
+/// (e.g. `assertion = "..."` or `backend = "qemu"`).
+fn line_starts_with_key(text: &str, offset: usize, key: &str) -> bool {
+    let line = &text[current_line(text, offset)];
+    let trimmed = line.trim_start();
+    trimmed
+        .strip_prefix(key)
+        .map(|rest| rest.trim_start().starts_with('='))
+        .unwrap_or(false)
+}
+
 /// Hover for the pin name under the cursor: its full alternate-function table.
+/// Also handles hovering over a `[[test]]` block's `assertion` value, showing
+/// the supported grammar forms.
 pub fn hover(text: &str, position: Position) -> Option<Hover> {
     let li = LineIndex::new(text);
     let offset = li.offset(position);
+
+    if line_starts_with_key(text, offset, "assertion") {
+        let span = current_line(text, offset);
+        let md = "**Test assertion grammar**\n\n\
+            - `pin <PIN> toggles at <N>Hz ±<N>%`\n\
+            - `pin <PIN> is <high|low> within <N>ms`\n\
+            - `<PERIPHERAL> echoes \"<text>\" within <N>ms`\n\
+            - `trace event \"<pattern>\" within <N>ms`\n"
+            .to_string();
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: md,
+            }),
+            range: Some(li.range(span)),
+        });
+    }
+
     let (token, span) = token_at(text, offset)?;
     let pin = Pin::from_str(&token).ok()?;
 
@@ -333,11 +379,39 @@ pub fn hover(text: &str, position: Position) -> Option<Hover> {
     })
 }
 
+/// Whether `offset` sits on a `backend = ` value line (e.g. inside a
+/// `[[test]]` block).
+fn is_backend_value_position(text: &str, offset: usize) -> bool {
+    line_starts_with_key(text, offset, "backend")
+}
+
+/// The three valid `[[test]]` `backend` values.
+fn backend_completions() -> Vec<CompletionItem> {
+    [
+        ("qemu", "run on QEMU only"),
+        ("hardware", "run on hardware only"),
+        ("both", "run on both backends (default)"),
+    ]
+    .into_iter()
+    .map(|(label, detail)| CompletionItem {
+        label: label.to_string(),
+        kind: Some(CompletionItemKind::VALUE),
+        detail: Some(detail.to_string()),
+        ..CompletionItem::default()
+    })
+    .collect()
+}
+
 /// Pin-name completions, offered when the cursor sits on a value line inside a
-/// `[peripherals.…]` table.
+/// `[peripherals.…]` table; `backend` value completions inside a `[[test]]`
+/// block.
 pub fn completion(text: &str, position: Position) -> Vec<CompletionItem> {
     let li = LineIndex::new(text);
     let offset = li.offset(position);
+
+    if is_backend_value_position(text, offset) {
+        return backend_completions();
+    }
 
     if !in_peripheral_value_position(text, offset) {
         return Vec::new();
@@ -668,5 +742,56 @@ mod tests {
     fn no_completion_outside_a_peripheral_table() {
         let text = "[device]\nfamily = \"\"\n";
         assert!(completion(text, pos(1, 10)).is_empty());
+    }
+
+    #[test]
+    fn invalid_test_underlines_the_quoted_name() {
+        let text = "[device]\nfamily = \"STM32F446RE\"\n\n[peripherals.usart2]\ntx = \"PA2\"\nrx = \"PA3\"\n\n[[test]]\nname = \"bogus_test\"\nassertion = \"this is not a valid assertion\"\n";
+        let diags = diagnostics(text);
+        assert_eq!(diags.len(), 1, "got {diags:?}");
+        let src_line = text
+            .lines()
+            .nth(diags[0].range.start.line as usize)
+            .unwrap();
+        assert!(src_line.contains("bogus_test"), "underlined: {src_line}");
+    }
+
+    #[test]
+    fn hover_on_assertion_value_shows_grammar() {
+        let text = "[[test]]\nname = \"t1\"\nassertion = \"pin PA5 toggles at 1Hz \u{00b1}5%\"\n";
+        let h = hover(text, pos(2, 15)).expect("expected hover on assertion value");
+        let HoverContents::Markup(m) = h.contents else {
+            panic!("expected markup hover");
+        };
+        assert!(m.value.contains("pin <PIN> toggles at <N>Hz"));
+        assert!(m.value.contains("pin <PIN> is <high|low> within <N>ms"));
+        assert!(m.value.contains("echoes \"<text>\" within <N>ms"));
+        assert!(m.value.contains("trace event \"<pattern>\" within <N>ms"));
+    }
+
+    #[test]
+    fn hover_off_assertion_and_pin_is_none() {
+        // Cursor on the `name` key's value, not an assertion or a pin.
+        let text = "[[test]]\nname = \"t1\"\nassertion = \"pin PA5 toggles at 1Hz \u{00b1}5%\"\n";
+        assert!(hover(text, pos(1, 8)).is_none());
+    }
+
+    #[test]
+    fn completion_offers_backend_values_inside_a_test_block() {
+        let text = "[[test]]\nname = \"t1\"\nassertion = \"pin PA5 is high within 10ms\"\nbackend = \"\"\n";
+        let items = completion(text, pos(3, 11));
+        assert_eq!(items.len(), 3, "got {items:?}");
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"qemu"));
+        assert!(labels.contains(&"hardware"));
+        assert!(labels.contains(&"both"));
+    }
+
+    #[test]
+    fn backend_completion_does_not_affect_peripheral_completion() {
+        let text = "[peripherals.spi1]\nmosi = \"\"\n";
+        let items = completion(text, pos(1, 8));
+        assert!(!items.is_empty());
+        assert!(items.iter().any(|i| i.label == "PA7"));
     }
 }
