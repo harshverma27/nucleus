@@ -2,10 +2,12 @@
 //!
 //! Owns the `stm32.toml` → diagnostics pipeline: [`config`] parses the file,
 //! [`solver`] validates it against the [`nucleus_db`] constraint database, and
-//! [`check`] is the one-call entry point the CLI and (later) the LSP build on.
+//! [`check`]/[`check_family`]/[`route_family`]/[`test_plan`] are the one-call
+//! entry points the CLI and LSP build on.
 //!
-//! Phase 2 ships the parser and the constraint solver (four conflict classes).
-//! HAL code generation lands in Phase 3.
+//! The solver has grown from v1's four conflict classes to eleven (clock-tree,
+//! DMA, IRQ/NVIC, auto-router, and `[[test]]` validation across v2's M1–M6).
+//! HAL code generation ([`codegen`]) shipped in v1 Phase 3.
 
 pub mod assertion;
 pub mod clocks;
