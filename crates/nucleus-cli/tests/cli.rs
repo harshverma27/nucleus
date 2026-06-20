@@ -566,6 +566,99 @@ fn route_overconstrained_fixture_exits_nonzero_naming_stuck_role() {
     );
 }
 
+// ---- M6: `nucleus test` -------------------------------------------------
+
+#[test]
+fn test_with_no_blocks_succeeds_and_prints_message() {
+    let proj = TempProject::new();
+    std::fs::write(
+        proj.path().join("stm32.toml"),
+        "[device]\nfamily = \"STM32F446RE\"\n",
+    )
+    .unwrap();
+
+    let out = nucleus(&["test".as_ref(), proj.path().as_os_str()]);
+    assert!(
+        out.status.success(),
+        "expected success with no [[test]] blocks, stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("no [[test]] blocks defined"),
+        "expected the no-tests message, got stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_with_invalid_assertion_fails_with_conflict() {
+    let proj = TempProject::new();
+    std::fs::write(
+        proj.path().join("stm32.toml"),
+        "[device]\nfamily = \"STM32F446RE\"\n\n[[test]]\nname = \"bogus\"\nassertion = \"this is not a real assertion\"\n",
+    )
+    .unwrap();
+
+    let out = nucleus(&["test".as_ref(), proj.path().as_os_str()]);
+    assert!(
+        !out.status.success(),
+        "expected failure on an invalid [[test]] assertion"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("error:") && stderr.contains("conflict"),
+        "expected a printed conflict, got stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_with_unknown_test_name_fails() {
+    let proj = TempProject::new();
+    std::fs::write(
+        proj.path().join("stm32.toml"),
+        "[device]\nfamily = \"STM32F446RE\"\n\n[[test]]\nname = \"real_test\"\nassertion = \"pin PA5 is high within 10ms\"\n",
+    )
+    .unwrap();
+
+    let out = nucleus(&[
+        "test".as_ref(),
+        proj.path().as_os_str(),
+        "--test".as_ref(),
+        "does_not_exist".as_ref(),
+    ]);
+    assert!(
+        !out.status.success(),
+        "expected failure when --test names a nonexistent test"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no test named"),
+        "expected the no-test-named message, got stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_with_missing_firmware_fails_before_touching_a_backend() {
+    let proj = TempProject::new();
+    std::fs::write(
+        proj.path().join("stm32.toml"),
+        "[device]\nfamily = \"STM32F446RE\"\n\n[[test]]\nname = \"real_test\"\nassertion = \"pin PA5 is high within 10ms\"\n",
+    )
+    .unwrap();
+    // Deliberately do not run `nucleus build` — build/firmware.bin won't exist.
+
+    let out = nucleus(&["test".as_ref(), proj.path().as_os_str()]);
+    assert!(
+        !out.status.success(),
+        "expected failure when build/firmware.bin is missing"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not found") && stderr.contains("nucleus build"),
+        "expected the flash-style 'not found, run nucleus build first' message, got stderr:\n{stderr}"
+    );
+}
+
 #[test]
 fn init_rejects_unknown_board() {
     let proj = TempProject::new();

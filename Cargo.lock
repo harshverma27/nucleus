@@ -563,6 +563,7 @@ dependencies = [
  "clap",
  "nucleus-compiler",
  "nucleus-db",
+ "nucleus-hil",
  "nucleus-lsp",
  "nucleus-trace",
 ]

@@ -13,7 +13,11 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use nucleus_compiler::{check_family, route_family, ParseError, Severity};
+use nucleus_compiler::{check_family, route_family, test_plan, ParseError, Severity};
+use nucleus_hil::backend::{Backend, FirmwareArtifact, HilError};
+use nucleus_hil::hardware::HardwareBackend;
+use nucleus_hil::qemu::QemuBackend;
+use nucleus_hil::{run_tests, TestStatus};
 
 use scaffold::Written;
 
@@ -84,6 +88,29 @@ enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Run [[test]] assertions against one or both HIL backends (the M5
+    /// substrate); exits non-zero if any selected test fails on any selected
+    /// backend.
+    Test {
+        /// Project root containing stm32.toml and build/firmware.{elf,bin}
+        /// (defaults to the current directory).
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Run on only one backend instead of both.
+        #[arg(long, value_enum)]
+        backend: Option<BackendArg>,
+        /// Run only the test with this name instead of all of them.
+        #[arg(long)]
+        test: Option<String>,
+    },
+}
+
+/// clap-friendly mirror of [`nucleus_compiler::BackendSelect`] for the
+/// `--backend` flag; kept distinct since `value_enum` wants its own type.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum BackendArg {
+    Qemu,
+    Hardware,
 }
 
 fn main() -> ExitCode {
@@ -102,6 +129,11 @@ fn main() -> ExitCode {
         } => run_trace(&config, ws_port, replay, trace_tcp, openocd),
         Command::Lsp => run_lsp(),
         Command::Route { path, out } => run_route(&path, out.as_deref()),
+        Command::Test {
+            path,
+            backend,
+            test,
+        } => run_test(&path, backend, test.as_deref()),
     }
 }
 
@@ -337,5 +369,129 @@ fn run_route(path: &Path, out: Option<&Path>) -> ExitCode {
             eprintln!();
             ExitCode::FAILURE
         }
+    }
+}
+
+/// Run `[[test]]` assertions from `path`'s `stm32.toml` against one or both
+/// HIL backends. Exit code: `0` if every selected test passes or is skipped
+/// on every backend it ran on, `1` on a parse/conflict error, an unknown
+/// `--test` name, missing firmware artifacts, or any failed test.
+fn run_test(
+    path: &Path,
+    backend_filter: Option<BackendArg>,
+    test_filter: Option<&str>,
+) -> ExitCode {
+    let toml_path = path.join("stm32.toml");
+    let text = match std::fs::read_to_string(&toml_path) {
+        Ok(text) => text,
+        Err(err) => {
+            eprintln!("error: cannot read {}: {err}", toml_path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut plan = match test_plan(&text) {
+        Err(err) => {
+            print_parse_error(&toml_path, &err);
+            return ExitCode::FAILURE;
+        }
+        Ok(Err(conflicts)) => {
+            let n = conflicts.len();
+            eprintln!(
+                "{}: {n} conflict{} found:\n",
+                toml_path.display(),
+                if n == 1 { "" } else { "s" }
+            );
+            for conflict in &conflicts {
+                let prefix = match conflict.severity() {
+                    Severity::Error => "error",
+                    Severity::Warning => "warning",
+                };
+                eprintln!("  {prefix}: {conflict}");
+            }
+            eprintln!();
+            return ExitCode::FAILURE;
+        }
+        Ok(Ok(plan)) => plan,
+    };
+
+    if plan.is_empty() {
+        println!("{}: no [[test]] blocks defined.", path.display());
+        return ExitCode::SUCCESS;
+    }
+
+    if let Some(name) = test_filter {
+        plan.retain(|t| t.name == name);
+        if plan.is_empty() {
+            eprintln!("error: no test named {name:?}");
+            return ExitCode::FAILURE;
+        }
+    }
+
+    let elf = path.join("build/firmware");
+    let bin = path.join("build/firmware.bin");
+    if !elf.exists() || !bin.exists() {
+        eprintln!(
+            "error: {} not found. Run `nucleus build` first.",
+            bin.display()
+        );
+        return ExitCode::FAILURE;
+    }
+    let firmware = FirmwareArtifact { elf, bin };
+
+    let check_report = match nucleus_compiler::check(&text) {
+        Ok(report) => report,
+        Err(err) => {
+            print_parse_error(&toml_path, &err);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut backends: Vec<Box<dyn Backend>> = Vec::new();
+    match backend_filter {
+        None => {
+            backends.push(Box::new(QemuBackend::default()));
+            backends.push(Box::new(HardwareBackend::default()));
+        }
+        Some(BackendArg::Qemu) => backends.push(Box::new(QemuBackend::default())),
+        Some(BackendArg::Hardware) => backends.push(Box::new(HardwareBackend::default())),
+    }
+
+    let mut any_failed = false;
+    for mut backend in backends {
+        let kind = backend.name();
+        match backend.start(&firmware, &check_report) {
+            Err(err @ HilError::ToolMissing(_)) => {
+                println!("skipped: {kind:?} ({err})");
+            }
+            Err(err) => {
+                eprintln!("error: {kind:?} failed to start: {err}");
+                any_failed = true;
+            }
+            Ok(()) => {
+                let outcomes = run_tests(backend.as_mut(), &plan);
+                let _ = backend.finish();
+                for outcome in &outcomes {
+                    let status_icon = match outcome.status {
+                        TestStatus::Passed => "PASS",
+                        TestStatus::Failed => "FAIL",
+                        TestStatus::Skipped => "SKIP",
+                    };
+                    println!(
+                        "  {status_icon} {} [{kind:?}]: {}",
+                        outcome.name, outcome.detail
+                    );
+                    if outcome.status == TestStatus::Failed {
+                        any_failed = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if any_failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }
