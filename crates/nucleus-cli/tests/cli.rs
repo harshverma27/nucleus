@@ -660,6 +660,33 @@ fn test_with_missing_firmware_fails_before_touching_a_backend() {
 }
 
 #[test]
+fn test_with_valid_block_and_present_firmware_reaches_backend_start() {
+    let proj = TempProject::new();
+    std::fs::write(
+        proj.path().join("stm32.toml"),
+        "[device]\nfamily = \"STM32F446RE\"\n\n[[test]]\nname = \"boot_log\"\nassertion = \"trace event \\\"O\\\" within 500ms\"\n",
+    )
+    .unwrap();
+    // Present-but-fake firmware: empty files are enough to pass the
+    // existence check in main.rs; an empty ELF will fail to actually boot
+    // (or be skipped if the backend's tool isn't installed), but that's not
+    // what this test asserts — it only proves the CLI gets past the
+    // "run `nucleus build` first" gate and attempts a backend.
+    std::fs::create_dir_all(proj.path().join("build")).unwrap();
+    std::fs::write(proj.path().join("build/firmware"), b"").unwrap();
+    std::fs::write(proj.path().join("build/firmware.bin"), b"").unwrap();
+
+    let out = nucleus(&["test".as_ref(), proj.path().as_os_str()]);
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("Run `nucleus build` first"),
+        "expected the firmware-found gate to pass, got stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
 fn init_rejects_unknown_board() {
     let proj = TempProject::new();
     let out = nucleus(&[

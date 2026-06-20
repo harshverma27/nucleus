@@ -11,9 +11,11 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use nucleus_compiler::check;
+use nucleus_compiler::{check, test_plan};
+use nucleus_hil::assert;
 use nucleus_hil::backend::{Backend, FirmwareArtifact, RunStatus};
 use nucleus_hil::qemu::QemuBackend;
+use nucleus_hil::TestStatus;
 
 fn fixture_elf() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/blink_itm/blink_itm_qemu.elf")
@@ -70,6 +72,84 @@ fn blink_itm_advances_tim2_and_emits_itm_log_on_qemu() {
         "expected TIM2's counter to change across the sample window, got {:?}",
         sample.readings
     );
+
+    let result = backend.finish();
+    assert_eq!(result.status, RunStatus::Completed);
+}
+
+/// M6's exit-criterion proof: a `[[test]]` block, parsed end-to-end through
+/// `nucleus_compiler::test_plan` (TOML -> `CompiledTest`), passes when run
+/// against the real `blink_itm` firmware's boot ITM log via
+/// `nucleus_hil::assert::run`. `blink_itm` emits `'O'` then `'K'` as two
+/// single-byte SWIT packets on boot (see `blink_itm_advances_tim2_and_emits_itm_log_on_qemu`
+/// above), so a pattern of `"O"` matches the first observed event.
+#[test]
+fn compiled_test_plan_passes_against_real_qemu_itm_boot_log() {
+    if !qemu_available() {
+        eprintln!("skipping: qemu-system-arm not installed");
+        return;
+    }
+
+    let plan = test_plan(
+        r#"
+[[test]]
+name = "boot_log"
+assertion = "trace event \"O\" within 3000ms"
+"#,
+    )
+    .expect("parses")
+    .expect("no conflicts");
+    assert_eq!(plan.len(), 1);
+    assert_eq!(plan[0].name, "boot_log");
+
+    let firmware = FirmwareArtifact {
+        elf: fixture_elf(),
+        bin: PathBuf::new(),
+    };
+    let report = check("").expect("empty config parses");
+
+    let mut backend = QemuBackend::default();
+    backend.start(&firmware, &report).expect("qemu boots");
+
+    let outcome = assert::run(&mut backend, &plan[0]);
+    assert_eq!(outcome.status, TestStatus::Passed, "{}", outcome.detail);
+
+    let result = backend.finish();
+    assert_eq!(result.status, RunStatus::Completed);
+}
+
+/// Same pipeline, but the pattern never appears in `blink_itm`'s boot log
+/// (which only ever emits `'O'` then `'K'`), so the assertion must fail
+/// rather than time out silently or pass by accident.
+#[test]
+fn compiled_test_plan_fails_on_an_itm_pattern_that_never_appears() {
+    if !qemu_available() {
+        eprintln!("skipping: qemu-system-arm not installed");
+        return;
+    }
+
+    let plan = test_plan(
+        r#"
+[[test]]
+name = "never_happens"
+assertion = "trace event \"never_happens\" within 500ms"
+"#,
+    )
+    .expect("parses")
+    .expect("no conflicts");
+    assert_eq!(plan.len(), 1);
+
+    let firmware = FirmwareArtifact {
+        elf: fixture_elf(),
+        bin: PathBuf::new(),
+    };
+    let report = check("").expect("empty config parses");
+
+    let mut backend = QemuBackend::default();
+    backend.start(&firmware, &report).expect("qemu boots");
+
+    let outcome = assert::run(&mut backend, &plan[0]);
+    assert_eq!(outcome.status, TestStatus::Failed, "{}", outcome.detail);
 
     let result = backend.finish();
     assert_eq!(result.status, RunStatus::Completed);
