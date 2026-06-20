@@ -29,12 +29,31 @@ pub struct ItmEvent {
     pub data: Vec<u8>,
 }
 
-/// A pin's state at one point in time, as returned by [`Backend::sample`].
-///
-/// M5 only needs to prove a GPIO toggle is observable over a window; register
-/// sampling can extend this once a concrete test needs it.
+/// What a [`Sample`]'s `bool` readings actually mean. The two backends don't
+/// observe the same thing here — `QemuBackend` can't see GPIO (see its module
+/// doc comment) and falls back to polling whether TIM2's counter changed,
+/// while `HardwareBackend` reads the real pin — so a bare `Vec<(Duration,
+/// bool)>` with no tag would let M6/M10 silently compare apples to oranges.
+/// Carrying the target explicitly forces call sites to either match on it or
+/// confirm both sides used the same one before treating two `Sample`s as
+/// comparable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SampleTarget {
+    /// `readings` are the pin's actual level.
+    Pin { port: nucleus_db::Port, pin_num: u8 },
+    /// `readings` are whether `register(peripheral, offset)` changed value
+    /// since the previous poll, not the value itself.
+    RegisterChanged {
+        peripheral: &'static str,
+        offset: u32,
+    },
+}
+
+/// A reading taken at one point in time over a window, as returned by
+/// [`Backend::sample`]. See [`SampleTarget`] for what the `bool` means.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sample {
+    pub target: SampleTarget,
     pub readings: Vec<(Duration, bool)>,
 }
 

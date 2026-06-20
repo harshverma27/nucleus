@@ -18,12 +18,16 @@
 //! comparator reasons about ITM events.
 
 use nucleus_itm::{Decoder, Packet};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use crate::backend::{HilError, ItmEvent};
 
 /// Read the semihosting-channel fifo at `path` until `max_bytes` is consumed
 /// or the writer closes it, decoding every complete ITM packet along the way.
+/// Always reads from byte 0 with a fresh [`Decoder`] — fine for a one-shot
+/// drain (tests, replay), wrong for polling the same growing file repeatedly
+/// (see [`read_new_events`], which `QemuBackend::await_itm_event` actually
+/// uses, for why).
 pub async fn drain_events(
     path: &std::path::Path,
     max_bytes: usize,
@@ -51,6 +55,44 @@ pub async fn drain_events(
     }
 
     Ok(events)
+}
+
+/// Read only the bytes written to `path` since `*offset`, decode them with
+/// the caller's persistent `decoder` (so a SWIT packet split across two
+/// polls still decodes correctly), and advance `*offset` past what was read.
+///
+/// `await_itm_event` polls this repeatedly; reading the whole file from byte
+/// 0 each time (as [`drain_events`] does) would hand back the same already-
+/// returned packet on every poll instead of advancing — confirmed as a real
+/// bug (the QEMU leg never observed the second of two back-to-back ITM
+/// writes). The file not existing yet (no semihosting write so far) is "no
+/// new events", not an error.
+pub async fn read_new_events(
+    path: &std::path::Path,
+    decoder: &mut Decoder,
+    offset: &mut u64,
+) -> Result<Vec<ItmEvent>, HilError> {
+    let mut reader = match tokio::fs::File::open(path).await {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(HilError::Io(err)),
+    };
+    reader
+        .seek(std::io::SeekFrom::Start(*offset))
+        .await
+        .map_err(HilError::Io)?;
+    let mut buf = Vec::new();
+    reader.read_to_end(&mut buf).await.map_err(HilError::Io)?;
+    *offset += buf.len() as u64;
+
+    Ok(decoder
+        .decode(&buf)
+        .into_iter()
+        .filter_map(|packet| match packet {
+            Packet::Instrumentation { port, data } => Some(ItmEvent { port, data }),
+            _ => None,
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -100,5 +142,46 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].port, 0);
         assert_eq!(events[0].data, vec![b'q']);
+    }
+
+    /// The bug this function exists to fix: polling the same growing file
+    /// must hand back each packet exactly once, in order — not re-decode the
+    /// first packet forever.
+    #[tokio::test]
+    async fn read_new_events_advances_past_already_read_bytes() {
+        let scratch = ScratchFile::new("itm-cursor");
+        let mut bytes = encode_swit_packet(0, b'O');
+        bytes.extend(encode_swit_packet(0, b'K'));
+        scratch.write(&bytes);
+
+        let mut decoder = Decoder::new();
+        let mut offset = 0u64;
+
+        let first = read_new_events(&scratch.0, &mut decoder, &mut offset)
+            .await
+            .unwrap();
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].data, vec![b'O']);
+        assert_eq!(first[1].data, vec![b'K']);
+
+        // Nothing new written since — re-polling must not re-decode 'O'/'K'.
+        let second = read_new_events(&scratch.0, &mut decoder, &mut offset)
+            .await
+            .unwrap();
+        assert!(second.is_empty());
+    }
+
+    #[tokio::test]
+    async fn read_new_events_on_a_missing_file_is_empty_not_an_error() {
+        let mut decoder = Decoder::new();
+        let mut offset = 0u64;
+        let events = read_new_events(
+            std::path::Path::new("/nonexistent/nucleus-hil-itm-test"),
+            &mut decoder,
+            &mut offset,
+        )
+        .await
+        .unwrap();
+        assert!(events.is_empty());
     }
 }

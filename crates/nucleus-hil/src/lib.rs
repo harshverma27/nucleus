@@ -15,9 +15,22 @@ pub mod hardware;
 pub mod preflight;
 pub mod qemu;
 
+/// Ask the OS for a currently-free TCP port by binding `:0` and reading back
+/// what it picked, then immediately dropping the listener to free it for the
+/// real client (QEMU's `-gdb`, or OpenOCD). Avoids the hardcoded-port
+/// collisions that broke concurrent backend instances in the same process
+/// (two `QemuBackend`s booting at once both reaching for `:1234`, etc).
+/// There's an inherent TOCTOU gap between the listener dropping and the real
+/// process binding — acceptable here since nothing else on a CI/dev box is
+/// racing for the same ephemeral port at the same instant.
+pub(crate) fn free_port() -> std::io::Result<u16> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    Ok(listener.local_addr()?.port())
+}
+
 pub use backend::{
     Backend, BackendKind, FirmwareArtifact, HilError, ItmEvent, RunResult, RunStatus, RunTiming,
-    Sample,
+    Sample, SampleTarget,
 };
 
 /// Runs `firmware` on both backends and always returns one [`RunResult`] per

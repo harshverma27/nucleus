@@ -12,6 +12,7 @@
 
 pub mod itm;
 
+use std::collections::VecDeque;
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
@@ -26,18 +27,11 @@ use tokio::net::TcpStream;
 use crate::backend::{
     Backend, BackendKind, FirmwareArtifact, HilError, ItmEvent, RunResult, RunTiming,
 };
-use crate::backend::{RunStatus, Sample};
+use crate::backend::{RunStatus, Sample, SampleTarget};
 use crate::gdbstub::GdbStub;
 use crate::gpio_map;
 use crate::preflight;
 
-/// OpenOCD's default telnet console port.
-const TELNET_PORT: u16 = 4444;
-/// OpenOCD's default gdbserver port — what [`GdbStub`] talks to on this leg.
-const GDB_PORT: u16 = 3333;
-/// Local TCP port OpenOCD streams the raw SWO byte stream to once
-/// `tpiu config internal :<port> ...` is sent.
-const TRACE_PORT: u16 = 3344;
 /// TIM2's APB1 base address — identical to `qemu::TIM2_BASE`; both mirror the
 /// real F4 memory map here.
 const TIM2_BASE: u32 = 0x4000_0000;
@@ -110,17 +104,40 @@ async fn telnet_send(addr: &str, cmd: &str) -> Result<(), HilError> {
 pub struct HardwareBackend {
     started: bool,
     skip_reason: Option<String>,
+    /// Set on any real observation error (gdbstub/SWO I/O or protocol
+    /// failures) after a successful `start()`; deliberately NOT set for
+    /// `HilError::NotObservable`, since that's an expected, documented gap,
+    /// not a run failure. `finish()` reports `RunStatus::Failed` instead of
+    /// `Completed` when this is set.
+    failure: Option<String>,
     start_time: Option<Instant>,
     log: Vec<String>,
     traces: Vec<ItmEvent>,
+    /// Decoded-but-not-yet-returned-to-the-caller events, in arrival order.
+    /// `await_itm_event` drains this before reading more bytes off the live
+    /// socket — bytes already pulled off it can't be re-read, so every
+    /// packet a single read decodes must be kept, not just the first.
+    pending: VecDeque<ItmEvent>,
     runtime: Option<tokio::runtime::Runtime>,
     openocd: Option<Child>,
     stub: Option<GdbStub>,
     trace_reader: Option<Box<dyn AsyncRead + Unpin + Send>>,
     decoder: Decoder,
+    telnet_port: u16,
+    gdb_port: u16,
+    trace_port: u16,
 }
 
 impl HardwareBackend {
+    /// Records `err` as the run's failure unless it's an expected
+    /// `NotObservable` gap, then returns it unchanged for `?` to propagate.
+    fn record_failure(&mut self, err: HilError) -> HilError {
+        if !matches!(err, HilError::NotObservable { .. }) {
+            self.failure = Some(err.to_string());
+        }
+        err
+    }
+
     /// Halt, read 4 bytes at `addr` over the gdbserver, resume. Mirrors
     /// `QemuBackend::register`'s halt/read/resume dance — OpenOCD's gdbserver
     /// only answers `m` queries while the target is halted.
@@ -130,15 +147,20 @@ impl HardwareBackend {
             .as_mut()
             .ok_or_else(|| HilError::Protocol("backend not started".to_string()))?;
         let runtime = self.runtime.as_ref().expect("runtime set in start()");
-        let bytes = runtime.block_on(async {
+        let result = runtime.block_on(async {
             stub.interrupt().await?;
             let result = stub.read_memory(addr, 4).await;
             stub.continue_execution().await?;
             result
-        })?;
-        Ok(u32::from_le_bytes(bytes.try_into().map_err(|_| {
-            HilError::Protocol("expected 4-byte register read".to_string())
-        })?))
+        });
+        let bytes = match result {
+            Ok(bytes) => bytes,
+            Err(err) => return Err(self.record_failure(err)),
+        };
+        bytes
+            .try_into()
+            .map(u32::from_le_bytes)
+            .map_err(|_| HilError::Protocol("expected 4-byte register read".to_string()))
     }
 }
 
@@ -183,23 +205,33 @@ impl Backend for HardwareBackend {
             Err(err) => return Err(HilError::Io(err)),
         }
 
+        // Dynamically allocated rather than OpenOCD's textbook defaults
+        // (4444/3333/3344) so two HardwareBackend runs in the same process
+        // don't collide on a port (e.g. parallel test threads) — even
+        // though only one can ever touch the single physical board at a
+        // time, the port-bind step itself would otherwise race.
+        self.telnet_port = crate::free_port().map_err(HilError::Io)?;
+        self.gdb_port = crate::free_port().map_err(HilError::Io)?;
+        self.trace_port = crate::free_port().map_err(HilError::Io)?;
+
         let mut openocd = Command::new("openocd")
             .arg("-f")
             .arg("interface/stlink.cfg")
             .arg("-f")
             .arg("target/stm32f4x.cfg")
             .arg("-c")
-            .arg(format!("gdb_port {GDB_PORT}"))
+            .arg(format!("gdb_port {}", self.gdb_port))
             .arg("-c")
-            .arg(format!("telnet_port {TELNET_PORT}"))
+            .arg(format!("telnet_port {}", self.telnet_port))
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
             .map_err(HilError::Io)?;
 
-        let telnet_addr = format!("127.0.0.1:{TELNET_PORT}");
-        let trace_addr = format!("127.0.0.1:{TRACE_PORT}");
-        let gdb_addr = format!("127.0.0.1:{GDB_PORT}");
+        let telnet_addr = format!("127.0.0.1:{}", self.telnet_port);
+        let trace_addr = format!("127.0.0.1:{}", self.trace_port);
+        let gdb_addr = format!("127.0.0.1:{}", self.gdb_port);
+        let trace_port = self.trace_port;
 
         // No PLL is configured on a freshly flashed board until the
         // firmware's own init runs, so the core is still on its reset clock
@@ -220,7 +252,7 @@ impl Backend for HardwareBackend {
                 // bytes written to a not-yet-connected SWO trace port are
                 // dropped, not buffered (confirmed empirically).
                 telnet_send(&telnet_addr, "reset halt").await?;
-                openocd_enable(&telnet_addr, TRACE_PORT, cpu_hz, swo_hz)
+                openocd_enable(&telnet_addr, trace_port, cpu_hz, swo_hz)
                     .await
                     .map_err(HilError::Io)?;
                 let trace_reader = Source::Tcp(trace_addr.clone())
@@ -274,37 +306,39 @@ impl Backend for HardwareBackend {
         self.read_memory(base + offset)
     }
 
-    /// Reads from the live SWO trace stream until one ITM instrumentation
-    /// packet decodes, or `timeout` elapses. A single read can decode more
-    /// than one packet (real hardware's "OK" log arrives as two back-to-back
-    /// SWIT packets in one TCP read) — unlike `QemuBackend`'s file-replay
-    /// poll, bytes already pulled off this live socket can't be re-read, so
-    /// any packets past the first are stashed in `traces` rather than
-    /// dropped.
+    /// Drains `pending` (events already decoded but not yet returned)
+    /// before reading more bytes. A single read can decode more than one
+    /// packet (real hardware's "OK" log arrives as two back-to-back SWIT
+    /// packets in one TCP read) — unlike `QemuBackend`'s file-replay poll, a
+    /// live socket's bytes can't be re-read, so every packet a read decodes
+    /// is queued, not just the first.
     fn await_itm_event(&mut self, timeout: Duration) -> Result<Option<ItmEvent>, HilError> {
+        if let Some(event) = self.pending.pop_front() {
+            return Ok(Some(event));
+        }
         let Some(reader) = self.trace_reader.as_mut() else {
-            return Ok(self.traces.pop());
+            return Ok(None);
         };
         let runtime = self.runtime.as_ref().expect("runtime set in start()");
         let decoder = &mut self.decoder;
 
-        let found: Option<(ItmEvent, Vec<ItmEvent>)> = runtime.block_on(async {
+        let result: Result<Vec<ItmEvent>, HilError> = runtime.block_on(async {
             let deadline = Instant::now() + timeout;
             loop {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
-                    return Ok(None);
+                    return Ok(Vec::new());
                 }
                 let mut buf = [0u8; 256];
                 let n = match tokio::time::timeout(remaining, reader.read(&mut buf)).await {
                     Ok(Ok(n)) => n,
                     Ok(Err(err)) => return Err(HilError::Io(err)),
-                    Err(_) => return Ok(None),
+                    Err(_) => return Ok(Vec::new()),
                 };
                 if n == 0 {
-                    return Ok(None);
+                    return Ok(Vec::new());
                 }
-                let mut events: Vec<ItmEvent> = decoder
+                let events: Vec<ItmEvent> = decoder
                     .decode(&buf[..n])
                     .into_iter()
                     .filter_map(|packet| match packet {
@@ -313,37 +347,40 @@ impl Backend for HardwareBackend {
                     })
                     .collect();
                 if !events.is_empty() {
-                    let first = events.remove(0);
-                    return Ok(Some((first, events)));
+                    return Ok(events);
                 }
             }
-        })?;
+        });
 
-        match found {
-            Some((first, mut extra)) => {
-                self.traces.push(first.clone());
-                self.traces.append(&mut extra);
-                Ok(Some(first))
-            }
-            None => Ok(None),
-        }
+        let events = match result {
+            Ok(events) => events,
+            Err(err) => return Err(self.record_failure(err)),
+        };
+        self.traces.extend(events.iter().cloned());
+        self.pending.extend(events);
+        Ok(self.pending.pop_front())
     }
 
     /// Polls `SAMPLE_PIN` (PA5, the pin `blink_itm_hw` toggles) over
     /// `duration`. Unlike `QemuBackend::sample` (which has to fall back to
     /// TIM2 — see its doc comment), this backend reads the real pin: GPIO is
-    /// not an `unimplemented_device` stub on actual silicon.
+    /// not an `unimplemented_device` stub on actual silicon. `Sample::target`
+    /// reports `Pin` so callers can tell the two backends' `Sample`s apart
+    /// rather than assuming they mean the same thing.
     fn sample(&mut self, duration: Duration) -> Result<Sample, HilError> {
         const POLL_INTERVAL: Duration = Duration::from_millis(5);
+        let (port, pin_num) = SAMPLE_PIN;
         let start = Instant::now();
         let mut readings = Vec::new();
         while start.elapsed() < duration {
-            let (port, pin_num) = SAMPLE_PIN;
             let state = self.pin(port, pin_num)?;
             readings.push((start.elapsed(), state));
             std::thread::sleep(POLL_INTERVAL);
         }
-        Ok(Sample { readings })
+        Ok(Sample {
+            target: SampleTarget::Pin { port, pin_num },
+            readings,
+        })
     }
 
     fn finish(&mut self) -> RunResult {
@@ -353,12 +390,15 @@ impl Backend for HardwareBackend {
         }
         self.trace_reader = None;
         self.stub = None;
-        let status = match &self.skip_reason {
-            Some(reason) => RunStatus::Skipped {
+        let status = match (&self.skip_reason, &self.failure) {
+            (Some(reason), _) => RunStatus::Skipped {
                 reason: reason.clone(),
             },
-            None if self.started => RunStatus::Completed,
-            None => RunStatus::Skipped {
+            (None, Some(error)) => RunStatus::Failed {
+                error: error.clone(),
+            },
+            (None, None) if self.started => RunStatus::Completed,
+            (None, None) => RunStatus::Skipped {
                 reason: "start() was never called".to_string(),
             },
         };
@@ -399,6 +439,72 @@ channel1 = "PA5"
 "#,
         )
         .expect("valid toml")
+    }
+
+    /// No board needed: a real in-process TCP socket stands in for the live
+    /// SWO stream. Reproduces the bug directly — a single read delivering
+    /// both packets must not lose the second one on a later poll.
+    #[test]
+    fn await_itm_event_returns_each_packet_once_in_order_without_a_board() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let trace_reader: Box<dyn AsyncRead + Unpin + Send> = runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (accept_result, connect_result) =
+                tokio::join!(listener.accept(), TcpStream::connect(addr));
+            let (mut server, _) = accept_result.unwrap();
+            server.write_all(&[0x01, b'O', 0x01, b'K']).await.unwrap();
+            Box::new(connect_result.unwrap())
+        });
+
+        let mut backend = HardwareBackend {
+            trace_reader: Some(trace_reader),
+            runtime: Some(runtime),
+            ..Default::default()
+        };
+
+        let first = backend
+            .await_itm_event(Duration::from_millis(500))
+            .unwrap()
+            .expect("first packet");
+        assert_eq!(first.data, b"O".to_vec());
+
+        let second = backend
+            .await_itm_event(Duration::from_millis(500))
+            .unwrap()
+            .expect("second packet must not have been dropped");
+        assert_eq!(second.data, b"K".to_vec());
+
+        assert!(backend
+            .await_itm_event(Duration::from_millis(50))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn finish_reports_failed_not_completed_after_a_recorded_failure() {
+        let mut backend = HardwareBackend {
+            started: true,
+            start_time: Some(Instant::now()),
+            ..Default::default()
+        };
+        backend.record_failure(HilError::Protocol("board disconnected mid-run".to_string()));
+        let result = backend.finish();
+        assert!(matches!(result.status, RunStatus::Failed { .. }));
+    }
+
+    #[test]
+    fn record_failure_ignores_expected_not_observable_gaps() {
+        let mut backend = HardwareBackend {
+            started: true,
+            start_time: Some(Instant::now()),
+            ..Default::default()
+        };
+        backend.record_failure(HilError::NotObservable {
+            peripheral: "SAI1".to_string(),
+        });
+        let result = backend.finish();
+        assert_eq!(result.status, RunStatus::Completed);
     }
 
     #[test]
@@ -451,15 +557,32 @@ channel1 = "PA5"
             .start(&firmware, &clean_report())
             .expect("start succeeds with board present");
 
-        let event = backend
+        // blink_itm_hw emits two single-byte SWIT packets ('O', 'K') back to
+        // back. Each must come back exactly once, in order — the bug this
+        // session fixed silently dropped the second one.
+        let first = backend
             .await_itm_event(Duration::from_secs(3))
             .expect("itm read doesn't error")
             .expect("blink_itm_hw emits an ITM log at boot");
-        assert_eq!(event.port, 0);
+        assert_eq!(first.port, 0);
+        assert_eq!(first.data, b"O".to_vec());
+
+        let second = backend
+            .await_itm_event(Duration::from_millis(200))
+            .expect("itm read doesn't error")
+            .expect("second packet ('K') must not be dropped");
+        assert_eq!(second.data, b"K".to_vec());
 
         let sample = backend
             .sample(Duration::from_millis(500))
             .expect("pin read doesn't error");
+        assert_eq!(
+            sample.target,
+            SampleTarget::Pin {
+                port: Port::A,
+                pin_num: 5
+            }
+        );
         assert!(
             sample.readings.iter().any(|(_, state)| *state),
             "PA5 should be high at least once while blink_itm_hw toggles it"
