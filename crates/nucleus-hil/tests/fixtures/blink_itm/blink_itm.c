@@ -47,12 +47,36 @@ static void emit_itm_log(void) {
 
 #else
 
-#define ITM_STIM0 (*(volatile uint32_t *)0xE0000000)
+/* Packet size on the wire follows the bus-access width of the store to the
+ * stimulus port (ARMv7-M DDI 0403E §C1.10) — a uint32_t* store here would
+ * emit 4-byte SWIT packets even for a 1-byte char, confirmed empirically
+ * against real hardware (the QEMU semihosting-encoded variant above only
+ * ever produces the 1-byte form, so this divergence is invisible there).
+ * uint8_t* keeps both backends' wire format identical. */
+#define ITM_STIM0 (*(volatile uint8_t *)0xE0000000)
 #define ITM_TER0 (*(volatile uint32_t *)0xE0000E00)
 #define ITM_TCR (*(volatile uint32_t *)0xE0000E80)
 #define DEMCR (*(volatile uint32_t *)0xE000EDFC)
+#define DBGMCU_CR (*(volatile uint32_t *)0xE0042004)
+#define GPIOB_MODER (*(volatile uint32_t *)0x40020400)
+#define GPIOB_AFRL (*(volatile uint32_t *)0x40020420)
+
+/* SWO only reaches the ST-Link on real hardware once PB3 is muxed to its
+ * TRACESWO alternate function (AF0) and DBGMCU.CR.TRACE_IOEN is set — both
+ * default off after reset (shared as a plain GPIO otherwise). QEMU's STM32F4
+ * model has no such pin-mux/DBGMCU gating, so this requirement only ever
+ * surfaces against real silicon: confirmed empirically — without it the
+ * OpenOCD SWO TCP stream stays bytes-zero even with ITM_TER0/TCR set. */
+static void enable_swo_pin(void) {
+    RCC_AHB1ENR |= (1u << 1); /* GPIOBEN */
+    GPIOB_MODER &= ~(0x3u << 6);
+    GPIOB_MODER |= (0x2u << 6); /* PB3 = alternate function (10) */
+    GPIOB_AFRL &= ~(0xFu << 12); /* PB3 AF0 = TRACESWO */
+    DBGMCU_CR |= (1u << 5);      /* TRACE_IOEN */
+}
 
 static void emit_itm_log(void) {
+    enable_swo_pin();
     DEMCR |= (1u << 24);  /* TRCENA */
     ITM_TCR |= 1u;        /* ITMENA */
     ITM_TER0 |= 1u;       /* enable stimulus port 0 */
