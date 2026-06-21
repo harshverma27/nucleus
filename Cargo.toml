@@ -8,6 +8,7 @@ members = [
     "crates/nucleus-itm",
     "crates/nucleus-trace",
     "crates/nucleus-hil",
+    "crates/nucleus-test-sdk",
 ]
 
 [workspace.package]
