@@ -428,6 +428,12 @@ fn run_test(
         }
     }
 
+    use nucleus_compiler::TestBody;
+    let (scripted, declarative): (Vec<_>, Vec<_>) = plan
+        .iter()
+        .cloned()
+        .partition(|t| matches!(t.body, TestBody::Scripted { .. }));
+
     let elf = path.join("build/firmware");
     let bin = path.join("build/firmware.bin");
     if !elf.exists() || !bin.exists() {
@@ -469,7 +475,7 @@ fn run_test(
                 any_failed = true;
             }
             Ok(()) => {
-                let outcomes = run_tests(backend.as_mut(), &plan);
+                let outcomes = run_tests(backend.as_mut(), &declarative);
                 let _ = backend.finish();
                 for outcome in &outcomes {
                     let status_icon = match outcome.status {
@@ -484,6 +490,42 @@ fn run_test(
                     if outcome.status == TestStatus::Failed {
                         any_failed = true;
                     }
+                }
+            }
+        }
+    }
+
+    for test in &scripted {
+        let TestBody::Scripted { script } = &test.body else {
+            continue;
+        };
+        // Which backend labels to run this scripted test against: the
+        // explicit `--backend` flag wins; otherwise fall back to the test's
+        // declared backend; `Both`/no filter runs it on both.
+        let labels: &[&str] = match (backend_filter, test.backend) {
+            (Some(BackendArg::Qemu), _) => &["qemu"],
+            (Some(BackendArg::Hardware), _) => &["hardware"],
+            (None, nucleus_compiler::BackendSelect::Qemu) => &["qemu"],
+            (None, nucleus_compiler::BackendSelect::Hardware) => &["hardware"],
+            (None, nucleus_compiler::BackendSelect::Both) => &["qemu", "hardware"],
+        };
+        for label in labels {
+            let status = std::process::Command::new("cargo")
+                .args(["test", script, "--", "--exact", "--nocapture"])
+                .current_dir(path)
+                .env("NUCLEUS_TEST_BACKEND", label)
+                .status();
+            match status {
+                Ok(s) if s.success() => {
+                    println!("  PASS {} [{label}] (scripted)", test.name);
+                }
+                Ok(_) => {
+                    println!("  FAIL {} [{label}] (scripted)", test.name);
+                    any_failed = true;
+                }
+                Err(e) => {
+                    eprintln!("  error: cargo test failed to launch: {e}");
+                    any_failed = true;
                 }
             }
         }
