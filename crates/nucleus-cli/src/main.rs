@@ -372,6 +372,33 @@ fn run_route(path: &Path, out: Option<&Path>) -> ExitCode {
     }
 }
 
+/// Backend labels a scripted test should actually run on: the intersection
+/// of what `--backend filter` allows and what the test's declared `select`
+/// permits. `filter = None` allows both; `select = Both` declares both.
+/// Empty result means skip — mirrors `nucleus_hil::backend_selected`'s
+/// skip-on-mismatch semantics so `--backend` filters rather than overrides.
+/// Order is deterministic: qemu before hardware.
+fn scripted_backend_labels(
+    filter: Option<BackendArg>,
+    select: nucleus_compiler::BackendSelect,
+) -> Vec<&'static str> {
+    use nucleus_compiler::BackendSelect;
+
+    let filter_allows_qemu = !matches!(filter, Some(BackendArg::Hardware));
+    let filter_allows_hardware = !matches!(filter, Some(BackendArg::Qemu));
+    let select_allows_qemu = matches!(select, BackendSelect::Both | BackendSelect::Qemu);
+    let select_allows_hardware = matches!(select, BackendSelect::Both | BackendSelect::Hardware);
+
+    let mut labels = Vec::new();
+    if filter_allows_qemu && select_allows_qemu {
+        labels.push("qemu");
+    }
+    if filter_allows_hardware && select_allows_hardware {
+        labels.push("hardware");
+    }
+    labels
+}
+
 /// Run `[[test]]` assertions from `path`'s `stm32.toml` against one or both
 /// HIL backends. Exit code: `0` if every selected test passes or is skipped
 /// on every backend it ran on, `1` on a parse/conflict error, an unknown
@@ -500,15 +527,19 @@ fn run_test(
             continue;
         };
         // Which backend labels to run this scripted test against: the
-        // explicit `--backend` flag wins; otherwise fall back to the test's
-        // declared backend; `Both`/no filter runs it on both.
-        let labels: &[&str] = match (backend_filter, test.backend) {
-            (Some(BackendArg::Qemu), _) => &["qemu"],
-            (Some(BackendArg::Hardware), _) => &["hardware"],
-            (None, nucleus_compiler::BackendSelect::Qemu) => &["qemu"],
-            (None, nucleus_compiler::BackendSelect::Hardware) => &["hardware"],
-            (None, nucleus_compiler::BackendSelect::Both) => &["qemu", "hardware"],
-        };
+        // intersection of what `--backend` allows and what the test's
+        // declared `backend` field selects. Mirrors the declarative path's
+        // skip-on-mismatch semantics (`nucleus_hil::backend_selected`) —
+        // `--backend` is a filter, not an override, so a `backend = "qemu"`
+        // test is never force-run on hardware.
+        let labels = scripted_backend_labels(backend_filter, test.backend);
+        if labels.is_empty() {
+            println!(
+                "  SKIP {} [scripted]: not selected for the requested backend",
+                test.name
+            );
+            continue;
+        }
         for label in labels {
             let status = std::process::Command::new("cargo")
                 .args(["test", script, "--", "--exact", "--nocapture"])
@@ -535,5 +566,45 @@ fn run_test(
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+#[cfg(test)]
+mod scripted_backend_tests {
+    use super::*;
+    use nucleus_compiler::BackendSelect;
+
+    #[test]
+    fn no_filter_and_both_runs_qemu_then_hardware() {
+        assert_eq!(
+            scripted_backend_labels(None, BackendSelect::Both),
+            vec!["qemu", "hardware"]
+        );
+    }
+
+    #[test]
+    fn hardware_filter_with_qemu_only_test_skips() {
+        // Previously-broken case: a `backend = "qemu"` scripted test must
+        // not be force-run when `--backend hardware` is passed.
+        assert_eq!(
+            scripted_backend_labels(Some(BackendArg::Hardware), BackendSelect::Qemu),
+            Vec::<&str>::new()
+        );
+    }
+
+    #[test]
+    fn qemu_filter_with_both_test_narrows_to_qemu() {
+        assert_eq!(
+            scripted_backend_labels(Some(BackendArg::Qemu), BackendSelect::Both),
+            vec!["qemu"]
+        );
+    }
+
+    #[test]
+    fn no_filter_with_hardware_only_test_runs_hardware() {
+        assert_eq!(
+            scripted_backend_labels(None, BackendSelect::Hardware),
+            vec!["hardware"]
+        );
     }
 }
