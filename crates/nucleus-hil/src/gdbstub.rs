@@ -62,6 +62,25 @@ impl GdbStub {
             .ok_or_else(|| HilError::Protocol(format!("non-hex memory reply: {reply}")))
     }
 
+    /// Write `bytes` to target memory at `addr` via the `M` packet
+    /// (`$M<addr>,<len>:<hex bytes>#<checksum>`). Stub must reply `OK`.
+    pub async fn write_memory(&mut self, addr: u32, bytes: &[u8]) -> Result<(), HilError> {
+        let mut hex = String::with_capacity(bytes.len() * 2);
+        for b in bytes {
+            hex.push_str(&format!("{b:02x}"));
+        }
+        let payload = format!("M{addr:x},{:x}:{hex}", bytes.len());
+        self.send_packet(&payload).await?;
+        let reply = self.read_packet().await?;
+        if reply == "OK" {
+            Ok(())
+        } else {
+            Err(HilError::Protocol(format!(
+                "memory write rejected by target: {reply}"
+            )))
+        }
+    }
+
     /// Resume target execution (`c` packet), used after attaching with `-S`
     /// or after [`interrupt`](Self::interrupt). Doesn't wait for the eventual
     /// stop-reply — the caller decides when (if ever) to halt again.
@@ -194,5 +213,47 @@ mod tests {
         let mut stub = GdbStub::connect(&addr.to_string()).await.unwrap();
         let result = stub.read_memory(0x4002_0010, 4).await;
         assert!(matches!(result, Err(HilError::Protocol(_))));
+    }
+
+    #[tokio::test]
+    async fn writes_memory_and_accepts_ok_reply() {
+        // Mock server: accept the M packet, ack '+', reply "$OK#<sum>".
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            // read the inbound packet bytes (best-effort, we don't parse here)
+            let mut buf = [0u8; 64];
+            let _ = sock.read(&mut buf).await.unwrap();
+            sock.write_all(b"+").await.unwrap();
+            let body = "OK";
+            let sum = body.bytes().fold(0u8, |a, b| a.wrapping_add(b));
+            let framed = format!("${body}#{sum:02x}");
+            sock.write_all(framed.as_bytes()).await.unwrap();
+            sock.flush().await.unwrap();
+        });
+
+        let mut stub = GdbStub::connect(&addr.to_string()).await.unwrap();
+        stub.write_memory(0x2000_0000, &[0x67, 0x41, 0x54, 0x4e]).await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn write_memory_surfaces_error_reply() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 64];
+            let _ = sock.read(&mut buf).await.unwrap();
+            sock.write_all(b"+").await.unwrap();
+            let framed = "$E01#"; // body "E01"
+            let sum = "E01".bytes().fold(0u8, |a, b| a.wrapping_add(b));
+            sock.write_all(format!("{framed}{sum:02x}").as_bytes()).await.unwrap();
+            sock.flush().await.unwrap();
+        });
+        let mut stub = GdbStub::connect(&addr.to_string()).await.unwrap();
+        let err = stub.write_memory(0x2000_0000, &[1, 2, 3, 4]).await.unwrap_err();
+        assert!(matches!(err, HilError::Protocol(_)));
     }
 }
