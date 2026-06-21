@@ -181,6 +181,14 @@ pub enum BackendSelect {
     Both,
 }
 
+/// A compiled test's payload: a declarative assertion (M6) or a scripted
+/// cargo-test pointer (M7).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TestBody {
+    Declarative(Assertion),
+    Scripted { script: String },
+}
+
 /// One `[[test]]` block, parsed and validated: ready for `nucleus-hil` to
 /// execute. Never carries raw TOML or [`Config`] — [`test_plan`] is the only
 /// place a [`Conflict::InvalidTest`] can still occur; once you have a
@@ -190,9 +198,19 @@ pub enum BackendSelect {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompiledTest {
     pub name: String,
-    pub assertion: Assertion,
+    pub body: TestBody,
     pub timeout: std::time::Duration,
     pub backend: BackendSelect,
+}
+
+impl CompiledTest {
+    /// The declarative assertion, if this is a declarative test.
+    pub fn assertion(&self) -> Option<&Assertion> {
+        match &self.body {
+            TestBody::Declarative(a) => Some(a),
+            TestBody::Scripted { .. } => None,
+        }
+    }
 }
 
 /// Parse and validate every `[[test]]` block in `text`, returning the
@@ -218,10 +236,6 @@ pub fn test_plan(text: &str) -> Result<Result<Vec<CompiledTest>, Vec<Conflict>>,
         .test
         .iter()
         .map(|t| {
-            let assertion = assertion::parse(&t.assertion).expect(
-                "solve() already validated every config.test entry's assertion string; \
-                 a parse failure here would have produced an InvalidTest conflict above",
-            );
             let backend = match t.backend.as_deref() {
                 None | Some("both") => BackendSelect::Both,
                 Some("qemu") => BackendSelect::Qemu,
@@ -231,9 +245,22 @@ pub fn test_plan(text: &str) -> Result<Result<Vec<CompiledTest>, Vec<Conflict>>,
                      {other:?} would have produced an InvalidTest conflict above"
                 ),
             };
+            let body = if t.kind.as_deref() == Some("scripted") {
+                TestBody::Scripted {
+                    script: t
+                        .script
+                        .clone()
+                        .expect("solve() validated scripted script present"),
+                }
+            } else {
+                TestBody::Declarative(assertion::parse(&t.assertion).expect(
+                    "solve() already validated every config.test entry's assertion string; \
+                     a parse failure here would have produced an InvalidTest conflict above",
+                ))
+            };
             CompiledTest {
                 name: t.name.clone(),
-                assertion,
+                body,
                 timeout: std::time::Duration::from_millis(t.timeout_ms),
                 backend,
             }
@@ -484,8 +511,8 @@ assertion = "pin PA5 is high within 10ms"
         assert_eq!(plan.len(), 1);
         assert_eq!(plan[0].name, "t1");
         assert!(matches!(
-            &plan[0].assertion,
-            Assertion::PinState { pin, level: true, within }
+            plan[0].assertion(),
+            Some(Assertion::PinState { pin, level: true, within })
                 if pin == "PA5" && *within == std::time::Duration::from_millis(10)
         ));
     }
@@ -623,5 +650,50 @@ assertion = "pin PA5 is high within 10ms"
             .iter()
             .any(|c| matches!(c, Conflict::InvalidTest { .. })));
         assert!(conflicts.iter().any(|c| c.severity() == Severity::Error));
+    }
+
+    #[test]
+    fn scripted_test_compiles_to_scripted_body() {
+        let toml = r#"
+[[test]]
+name = "uart_loopback"
+type = "scripted"
+script = "uart_loopback"
+backend = "both"
+"#;
+        let plan = test_plan(toml).unwrap().unwrap();
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].name, "uart_loopback");
+        assert!(matches!(
+            &plan[0].body,
+            crate::TestBody::Scripted { script } if script == "uart_loopback"
+        ));
+    }
+
+    #[test]
+    fn scripted_test_without_script_is_invalid() {
+        let toml = r#"
+[[test]]
+name = "bad"
+type = "scripted"
+"#;
+        let conflicts = test_plan(toml).unwrap().unwrap_err();
+        assert!(conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::InvalidTest { .. })));
+    }
+
+    #[test]
+    fn declarative_test_with_script_is_invalid() {
+        let toml = r#"
+[[test]]
+name = "bad"
+assertion = "pin PA5 is high within 10ms"
+script = "nope"
+"#;
+        let conflicts = test_plan(toml).unwrap().unwrap_err();
+        assert!(conflicts
+            .iter()
+            .any(|c| matches!(c, Conflict::InvalidTest { .. })));
     }
 }

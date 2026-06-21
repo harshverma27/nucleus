@@ -332,47 +332,94 @@ pub fn solve(config: &Config, db: &Database) -> Vec<Conflict> {
     // else depends on it, so it runs last in the deterministic order.
     // `config.test` is a `Vec`, not a `BTreeMap` — iterate in document order.
     for test in &config.test {
-        let assertion = match crate::assertion::parse(&test.assertion) {
-            Ok(assertion) => assertion,
-            Err(reason) => {
+        let is_scripted = test.kind.as_deref() == Some("scripted");
+        let kind_valid = match test.kind.as_deref() {
+            None | Some("declarative") | Some("scripted") => true,
+            Some(other) => {
+                conflicts.push(Conflict::InvalidTest {
+                    node: test.name.clone(),
+                    reason: format!("type must be \"declarative\" or \"scripted\", got {other:?}"),
+                });
+                false
+            }
+        };
+        if !kind_valid {
+            continue;
+        }
+
+        if is_scripted {
+            if test.script.as_deref().unwrap_or("").is_empty() {
+                conflicts.push(Conflict::InvalidTest {
+                    node: test.name.clone(),
+                    reason: "scripted test requires a non-empty `script`".to_string(),
+                });
+            }
+            if !test.assertion.is_empty() {
+                conflicts.push(Conflict::InvalidTest {
+                    node: test.name.clone(),
+                    reason: "scripted test must not set `assertion`".to_string(),
+                });
+            }
+        } else {
+            // declarative: existing M6 validation (assertion parse + subject check)
+            if test.script.is_some() {
+                conflicts.push(Conflict::InvalidTest {
+                    node: test.name.clone(),
+                    reason: "declarative test must not set `script`".to_string(),
+                });
+                continue;
+            }
+            if test.assertion.is_empty() {
+                conflicts.push(Conflict::InvalidTest {
+                    node: test.name.clone(),
+                    reason: "declarative test requires an `assertion`".to_string(),
+                });
+                continue;
+            }
+
+            let assertion = match crate::assertion::parse(&test.assertion) {
+                Ok(assertion) => assertion,
+                Err(reason) => {
+                    conflicts.push(Conflict::InvalidTest {
+                        node: test.name.clone(),
+                        reason,
+                    });
+                    continue;
+                }
+            };
+
+            let subject_invalid = match &assertion {
+                crate::assertion::Assertion::PinToggles { pin, .. }
+                | crate::assertion::Assertion::PinState { pin, .. } => {
+                    if Pin::from_str(pin).is_err() {
+                        Some(format!("'{pin}' is not a valid pin name"))
+                    } else {
+                        None
+                    }
+                }
+                crate::assertion::Assertion::UartEcho { instance, .. } => {
+                    let peripheral = model::peripheral_name(instance);
+                    if !db.has_peripheral(&peripheral) {
+                        Some(format!(
+                            "peripheral {instance} is not available on this family"
+                        ))
+                    } else {
+                        None
+                    }
+                }
+                crate::assertion::Assertion::ItmEvent { .. } => None,
+            };
+
+            if let Some(reason) = subject_invalid {
                 conflicts.push(Conflict::InvalidTest {
                     node: test.name.clone(),
                     reason,
                 });
                 continue;
             }
-        };
-
-        let subject_invalid = match &assertion {
-            crate::assertion::Assertion::PinToggles { pin, .. }
-            | crate::assertion::Assertion::PinState { pin, .. } => {
-                if Pin::from_str(pin).is_err() {
-                    Some(format!("'{pin}' is not a valid pin name"))
-                } else {
-                    None
-                }
-            }
-            crate::assertion::Assertion::UartEcho { instance, .. } => {
-                let peripheral = model::peripheral_name(instance);
-                if !db.has_peripheral(&peripheral) {
-                    Some(format!(
-                        "peripheral {instance} is not available on this family"
-                    ))
-                } else {
-                    None
-                }
-            }
-            crate::assertion::Assertion::ItmEvent { .. } => None,
-        };
-
-        if let Some(reason) = subject_invalid {
-            conflicts.push(Conflict::InvalidTest {
-                node: test.name.clone(),
-                reason,
-            });
-            continue;
         }
 
+        // shared backend validation applies to both declarative and scripted.
         if let Some(backend) = &test.backend {
             if backend != "qemu" && backend != "hardware" && backend != "both" {
                 conflicts.push(Conflict::InvalidTest {

@@ -175,11 +175,18 @@ pub struct ExtiPin {
 #[serde(deny_unknown_fields, rename = "test")]
 pub struct TestCase {
     pub name: String,
+    #[serde(default)]
     pub assertion: String,
     #[serde(default = "default_timeout_ms")]
     pub timeout_ms: u64,
     #[serde(default)]
     pub backend: Option<String>, // "qemu" | "hardware" | "both"; None = both
+    /// `"declarative"` (default, M6) or `"scripted"` (M7). TOML key is `type`.
+    #[serde(rename = "type", default)]
+    pub kind: Option<String>,
+    /// For `type = "scripted"`: the cargo test name to run. Ignored otherwise.
+    #[serde(default)]
+    pub script: Option<String>,
 }
 
 fn default_timeout_ms() -> u64 {
