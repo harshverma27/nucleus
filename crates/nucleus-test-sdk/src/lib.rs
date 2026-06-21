@@ -5,5 +5,7 @@
 
 pub mod agent;
 pub mod protocol;
+pub mod serial;
 
 pub use agent::{AgentClient, SdkError};
+pub use serial::Serial;
