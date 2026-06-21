@@ -1,7 +1,20 @@
 //! The hardware HIL backend: flash a real board (`st-flash`), spawn OpenOCD
 //! to bridge the ST-Link's SWD/SWO lines to TCP, observe via OpenOCD's
-//! gdbserver (memory reads via [`crate::gdbstub`]) and its SWO trace port
-//! (decoded by [`itm`]).
+//! telnet console (memory reads via `halt`/`mdw`/`resume`) and its SWO trace
+//! port (decoded by [`itm`]).
+//!
+//! Memory is read over OpenOCD's *telnet* console, not its gdbserver, even
+//! though [`crate::gdbstub`] exists and the QEMU leg uses it. OpenOCD halts the
+//! target the instant a GDB client attaches (its default `gdb-attach` event),
+//! so the bare-`0x03` interrupt this minimal RSP client sends then lands on an
+//! already-halted core — OpenOCD logs `The target is not running when halt was
+//! requested, stopping GDB`, drops the connection, and the stop-reply read
+//! hangs out to its timeout (confirmed empirically against a NUCLEO-F411RE).
+//! The telnet `halt`/`mdw <addr>`/`resume` path has none of that attach
+//! semantics, reuses the console connection this backend already drives for
+//! `reset halt`/`reset run`, and — by never opening a GDB connection at all —
+//! also removes the gdb-attach-vs-SWO-capture race the lazy-connect workaround
+//! used to dance around.
 //!
 //! Getting this far required two fixture-firmware fixes found only by
 //! testing against real silicon (QEMU models neither gap): the SWO pin
@@ -27,7 +40,6 @@ use crate::backend::{
     Backend, BackendKind, FirmwareArtifact, HilError, ItmEvent, RunResult, RunTiming,
 };
 use crate::backend::{RunStatus, Sample, SampleTarget};
-use crate::gdbstub::GdbStub;
 use crate::gpio_map;
 use crate::preflight;
 
@@ -134,6 +146,70 @@ async fn telnet_send(addr: &str, cmd: &str) -> Result<(), HilError> {
     Ok(())
 }
 
+/// Write one OpenOCD telnet command (no settle delay — used on the hot
+/// `read_memory` path, unlike [`telnet_send`]).
+async fn telnet_write_line(conn: &mut TcpStream, cmd: &str) -> Result<(), HilError> {
+    conn.write_all(cmd.as_bytes()).await?;
+    conn.write_all(b"\r\n").await?;
+    conn.flush().await?;
+    Ok(())
+}
+
+/// Read OpenOCD's telnet console output until `marker` (the `0x<addr>:` prefix
+/// `mdw` echoes before the value) has been seen *and* the line it's on has
+/// terminated — OpenOCD's telnet has no length framing, so we poll until the
+/// value we asked for has fully arrived or a 2-second deadline elapses.
+async fn read_until_value(conn: &mut TcpStream, marker: &str) -> Result<String, HilError> {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut acc = String::new();
+    let mut buf = [0u8; 512];
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(HilError::Protocol(format!(
+                "timed out reading mdw reply; got {acc:?}"
+            )));
+        }
+        let n = match tokio::time::timeout(remaining, conn.read(&mut buf)).await {
+            Ok(Ok(0)) => {
+                return Err(HilError::Protocol(
+                    "telnet connection closed mid-mdw".to_string(),
+                ))
+            }
+            Ok(Ok(n)) => n,
+            Ok(Err(err)) => return Err(HilError::Io(err)),
+            Err(_) => {
+                return Err(HilError::Protocol(format!(
+                    "timed out reading mdw reply; got {acc:?}"
+                )))
+            }
+        };
+        acc.push_str(&String::from_utf8_lossy(&buf[..n]));
+        if let Some(idx) = acc.find(marker) {
+            if acc[idx + marker.len()..].contains('\n') {
+                return Ok(acc);
+            }
+        }
+    }
+}
+
+/// Parse the word out of an OpenOCD `mdw` reply line — e.g. `0x40020010:
+/// 000085ef` → `0x000085ef`. The `mdw` command echoes itself first
+/// (`mdw 0x40020010`, no trailing colon), so matching on the colon-suffixed
+/// address avoids latching onto the echo.
+fn parse_mdw_word(reply: &str, addr: u32) -> Result<u32, HilError> {
+    let marker = format!("0x{addr:08x}:");
+    let rest = reply
+        .split(&marker)
+        .nth(1)
+        .ok_or_else(|| HilError::Protocol(format!("mdw reply missing {marker}: {reply:?}")))?;
+    let token = rest.split_whitespace().next().ok_or_else(|| {
+        HilError::Protocol(format!("mdw reply had no value after {marker}: {reply:?}"))
+    })?;
+    u32::from_str_radix(token, 16)
+        .map_err(|_| HilError::Protocol(format!("mdw value not hex: {token:?}")))
+}
+
 #[derive(Default)]
 pub struct HardwareBackend {
     started: bool,
@@ -154,7 +230,6 @@ pub struct HardwareBackend {
     pending: VecDeque<ItmEvent>,
     runtime: Option<tokio::runtime::Runtime>,
     openocd: Option<Child>,
-    stub: Option<GdbStub>,
     trace_reader: Option<Box<dyn AsyncRead + Unpin + Send>>,
     decoder: Decoder,
     telnet_port: u16,
@@ -172,45 +247,32 @@ impl HardwareBackend {
         err
     }
 
-    /// Halt, read 4 bytes at `addr` over the gdbserver, resume. Mirrors
-    /// `QemuBackend::register`'s halt/read/resume dance — OpenOCD's gdbserver
-    /// only answers `m` queries while the target is halted.
+    /// Read one 32-bit word at `addr` over OpenOCD's telnet console:
+    /// `halt`, `mdw 0x<addr>`, `resume`. See this module's doc comment for why
+    /// this uses telnet rather than the gdbserver. Each call opens a fresh
+    /// telnet connection (a local-socket connect is cheap relative to the
+    /// halt/read/resume round trip) and leaves the target running for the next
+    /// `sample` poll.
     fn read_memory(&mut self, addr: u32) -> Result<u32, HilError> {
         if !self.started {
             return Err(HilError::Protocol("backend not started".to_string()));
         }
         let runtime = self.runtime.as_ref().expect("runtime set in start()");
-        if self.stub.is_none() {
-            // Connected lazily, on first actual register/pin read, rather
-            // than eagerly in `start()` — opening the gdb-port connection
-            // immediately after `reset run` raced OpenOCD's own SWO-capture
-            // loop on real hardware (`Error: attempted 'gdb' connection
-            // rejected` in its log, immediately followed by zero ITM bytes
-            // ever arriving), confirmed empirically against a NUCLEO-F411RE.
-            // A test that never calls `pin`/`register`/`sample` now never
-            // opens this connection at all.
-            let gdb_addr = format!("127.0.0.1:{}", self.gdb_port);
-            let stub = match runtime.block_on(GdbStub::connect(&gdb_addr)) {
-                Ok(stub) => stub,
-                Err(err) => return Err(self.record_failure(err)),
-            };
-            self.stub = Some(stub);
-        }
-        let stub = self.stub.as_mut().expect("just set above");
-        let result = runtime.block_on(async {
-            stub.interrupt().await?;
-            let result = stub.read_memory(addr, 4).await;
-            stub.continue_execution().await?;
-            result
+        let telnet_addr = format!("127.0.0.1:{}", self.telnet_port);
+        let result: Result<u32, HilError> = runtime.block_on(async {
+            let mut conn = TcpStream::connect(&telnet_addr).await?;
+            telnet_write_line(&mut conn, "halt").await?;
+            // Brief settle so the core is actually halted before the read —
+            // `mdw` on a still-running core can race the halt and read stale
+            // or in-flight state.
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let marker = format!("0x{addr:08x}:");
+            telnet_write_line(&mut conn, &format!("mdw 0x{addr:08x}")).await?;
+            let reply = read_until_value(&mut conn, &marker).await?;
+            telnet_write_line(&mut conn, "resume").await?;
+            parse_mdw_word(&reply, addr)
         });
-        let bytes = match result {
-            Ok(bytes) => bytes,
-            Err(err) => return Err(self.record_failure(err)),
-        };
-        bytes
-            .try_into()
-            .map(u32::from_le_bytes)
-            .map_err(|_| HilError::Protocol("expected 4-byte register read".to_string()))
+        result.map_err(|err| self.record_failure(err))
     }
 }
 
@@ -445,7 +507,6 @@ impl Backend for HardwareBackend {
             let _ = child.wait();
         }
         self.trace_reader = None;
-        self.stub = None;
         let status = match (&self.skip_reason, &self.failure) {
             (Some(reason), _) => RunStatus::Skipped {
                 reason: reason.clone(),
@@ -550,6 +611,27 @@ channel1 = "PA5"
             .await_itm_event(Duration::from_millis(50))
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn parses_the_word_out_of_a_real_mdw_reply() {
+        // Exactly what OpenOCD's telnet console emits, command-echo and all
+        // (captured live from a NUCLEO-F411RE): the echoed `mdw 0x40020010`
+        // (no colon) must not be mistaken for the value line.
+        let reply = "mdw 0x40020010\r\n\u{0}0x40020010: 000085ef \r\n\r\n\r> ";
+        assert_eq!(parse_mdw_word(reply, 0x4002_0010).unwrap(), 0x0000_85ef);
+    }
+
+    #[test]
+    fn mdw_reply_without_the_address_marker_is_a_protocol_error() {
+        let result = parse_mdw_word("> \r\nInvalid command\r\n", 0x4002_0010);
+        assert!(matches!(result, Err(HilError::Protocol(_))));
+    }
+
+    #[test]
+    fn mdw_reply_with_non_hex_value_is_a_protocol_error() {
+        let result = parse_mdw_word("0x40020010: zzzzzzzz \r\n", 0x4002_0010);
+        assert!(matches!(result, Err(HilError::Protocol(_))));
     }
 
     #[test]
