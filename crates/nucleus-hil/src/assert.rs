@@ -54,7 +54,17 @@ fn outcome_from_error(name: &str, err: HilError) -> TestOutcome {
 /// be started ([`Backend::start`] called and `Ok`) — this function only
 /// observes, never boots/flashes.
 pub fn run(backend: &mut dyn Backend, test: &CompiledTest) -> TestOutcome {
-    match &test.assertion {
+    let assertion = match &test.body {
+        nucleus_compiler::TestBody::Declarative(a) => a,
+        nucleus_compiler::TestBody::Scripted { .. } => {
+            return TestOutcome {
+                name: test.name.clone(),
+                status: TestStatus::Skipped,
+                detail: "scripted test: run via `nucleus test` (cargo)".to_string(),
+            };
+        }
+    };
+    match assertion {
         Assertion::PinToggles {
             pin,
             hz,
@@ -376,7 +386,7 @@ mod tests {
     fn test_with(assertion: Assertion, backend_select: BackendSelect) -> CompiledTest {
         CompiledTest {
             name: "t".to_string(),
-            assertion,
+            body: nucleus_compiler::TestBody::Declarative(assertion),
             timeout: Duration::from_millis(50),
             backend: backend_select,
         }

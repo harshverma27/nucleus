@@ -226,11 +226,11 @@ channel1 = "PA5"
     ) -> nucleus_compiler::CompiledTest {
         nucleus_compiler::CompiledTest {
             name: name.to_string(),
-            assertion: nucleus_compiler::Assertion::PinState {
+            body: nucleus_compiler::TestBody::Declarative(nucleus_compiler::Assertion::PinState {
                 pin: "PA5".to_string(),
                 level: true,
                 within: std::time::Duration::from_millis(5),
-            },
+            }),
             timeout: std::time::Duration::from_millis(50),
             backend: select,
         }
