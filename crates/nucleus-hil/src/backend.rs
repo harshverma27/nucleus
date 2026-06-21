@@ -151,6 +151,12 @@ pub trait Backend {
 
     fn register(&mut self, peripheral: &str, offset: u32) -> Result<u32, HilError>;
 
+    /// Read one 32-bit little-endian word at absolute address `addr`.
+    fn read_mem32(&mut self, addr: u32) -> Result<u32, HilError>;
+
+    /// Write one 32-bit little-endian word `value` to absolute address `addr`.
+    fn write_mem32(&mut self, addr: u32, value: u32) -> Result<(), HilError>;
+
     fn await_itm_event(&mut self, timeout: Duration) -> Result<Option<ItmEvent>, HilError>;
 
     fn sample(&mut self, duration: Duration) -> Result<Sample, HilError>;

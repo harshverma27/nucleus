@@ -177,7 +177,10 @@ impl Backend for QemuBackend {
                 })
             }
         };
-        let addr = base + offset;
+        self.read_mem32(base + offset)
+    }
+
+    fn read_mem32(&mut self, addr: u32) -> Result<u32, HilError> {
         let stub = self
             .stub
             .as_mut()
@@ -188,9 +191,9 @@ impl Backend for QemuBackend {
         // so the firmware keeps running between observations.
         let result = runtime.block_on(async {
             stub.interrupt().await?;
-            let result = stub.read_memory(addr, 4).await;
+            let r = stub.read_memory(addr, 4).await;
             stub.continue_execution().await?;
-            result
+            r
         });
         let bytes = match result {
             Ok(bytes) => bytes,
@@ -199,7 +202,22 @@ impl Backend for QemuBackend {
         bytes
             .try_into()
             .map(u32::from_le_bytes)
-            .map_err(|_| HilError::Protocol("expected 4-byte register read".to_string()))
+            .map_err(|_| HilError::Protocol("expected 4-byte read".to_string()))
+    }
+
+    fn write_mem32(&mut self, addr: u32, value: u32) -> Result<(), HilError> {
+        let stub = self
+            .stub
+            .as_mut()
+            .ok_or_else(|| HilError::Protocol("backend not started".to_string()))?;
+        let runtime = self.runtime.as_ref().expect("runtime set in start()");
+        let result = runtime.block_on(async {
+            stub.interrupt().await?;
+            let r = stub.write_memory(addr, &value.to_le_bytes()).await;
+            stub.continue_execution().await?;
+            r
+        });
+        result.map_err(|err| self.record_failure(err))
     }
 
     /// Drains `pending` (events already decoded but not yet returned) before

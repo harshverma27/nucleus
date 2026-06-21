@@ -180,6 +180,16 @@ channel1 = "PA5"
             Ok(0)
         }
 
+        fn read_mem32(&mut self, _addr: u32) -> Result<u32, HilError> {
+            self.calls.set(self.calls.get() + 1);
+            Ok(0)
+        }
+
+        fn write_mem32(&mut self, _addr: u32, _value: u32) -> Result<(), HilError> {
+            self.calls.set(self.calls.get() + 1);
+            Ok(())
+        }
+
         fn await_itm_event(
             &mut self,
             _timeout: std::time::Duration,

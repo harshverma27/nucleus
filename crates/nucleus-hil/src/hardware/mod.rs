@@ -274,6 +274,28 @@ impl HardwareBackend {
         });
         result.map_err(|err| self.record_failure(err))
     }
+
+    /// Write one 32-bit word `value` at `addr` over OpenOCD's telnet console:
+    /// `halt`, `mww 0x<addr> 0x<value>`, `resume`. See the module doc comment
+    /// for why this uses telnet rather than the gdbserver.
+    fn write_memory(&mut self, addr: u32, value: u32) -> Result<(), HilError> {
+        if !self.started {
+            return Err(HilError::Protocol("backend not started".to_string()));
+        }
+        let runtime = self.runtime.as_ref().expect("runtime set in start()");
+        let telnet_addr = format!("127.0.0.1:{}", self.telnet_port);
+        let result: Result<(), HilError> = runtime.block_on(async {
+            let mut conn = TcpStream::connect(&telnet_addr).await?;
+            telnet_write_line(&mut conn, "halt").await?;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            telnet_write_line(&mut conn, &format!("mww 0x{addr:08x} 0x{value:08x}")).await?;
+            // Brief settle so OpenOCD applies the write before we resume.
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            telnet_write_line(&mut conn, "resume").await?;
+            Ok(())
+        });
+        result.map_err(|err| self.record_failure(err))
+    }
 }
 
 impl Backend for HardwareBackend {
@@ -422,6 +444,14 @@ impl Backend for HardwareBackend {
             }
         };
         self.read_memory(base + offset)
+    }
+
+    fn read_mem32(&mut self, addr: u32) -> Result<u32, HilError> {
+        self.read_memory(addr)
+    }
+
+    fn write_mem32(&mut self, addr: u32, value: u32) -> Result<(), HilError> {
+        self.write_memory(addr, value)
     }
 
     /// Drains `pending` (events already decoded but not yet returned)
