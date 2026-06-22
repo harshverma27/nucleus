@@ -54,7 +54,7 @@ The mailbox is 8 little-endian `u32` fields, starting at a fixed SRAM address:
 |---|---|---|
 | `magic` | `0x00` | `0x4E54_4167` (`'NTAg'`), written last during boot so a nonzero read means "fully initialized" |
 | `version` | `0x04` | protocol version (see below) |
-| `seq` | `0x08` | sequence counter, bumped by the host before each command |
+| `seq` | `0x08` | sequence counter the host bumps before each command; reserved for future de-duplication. Synchronization does **not** depend on it — the agent acts only on `status == BUSY`, which the host writes *last* (after the args/cmd), so a command is never observed half-written. |
 | `cmd` | `0x0C` | command id (see table) |
 | `arg0` | `0x10` | command argument 0 |
 | `arg1` | `0x14` | command argument 1 |
@@ -115,14 +115,16 @@ use nucleus_test_sdk::{AgentClient, Serial};
 
 // `backend` is anything implementing `nucleus_hil::backend::Backend`
 // (QemuBackend or HardwareBackend), already started.
+//
+// Open the UART side-channel first — `serial_port()` borrows `&backend`,
+// so it must happen before the `&mut backend` the AgentClient holds. On
+// QEMU the port is allocated dynamically and reported by the backend; on
+// hardware it is the ST-Link Virtual COM Port device path.
+let mut serial = Serial::open_tcp(&format!("127.0.0.1:{}", backend.serial_port().unwrap()))
+    .expect("open QEMU USART socket"); // hardware: Serial::open_device("/dev/ttyACM0", 115200)
+
 let mut client = AgentClient::new(&mut backend);
 client.connect().expect("agent handshake");
-
-// Open the UART side-channel: QEMU's serial TCP socket, or the real
-// ST-Link Virtual COM Port on hardware.
-let mut serial = Serial::open_tcp("127.0.0.1:4444")
-    .or_else(|_| Serial::open_device("/dev/ttyACM0", 115200))
-    .expect("open UART channel");
 
 // TX: ask the agent to send a byte out its USART, observe it on the wire.
 client.uart_tx(0x5A).expect("uart_tx");
