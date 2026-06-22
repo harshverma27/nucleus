@@ -1,4 +1,4 @@
-# Enabling ITM Trace
+# Trace Dashboard & ITM Decoding
 
 `nucleus trace` decodes ARM CoreSight ITM/SWO packets and streams them to the
 trace dashboard. Getting data flowing end-to-end needs two pieces wired
@@ -139,3 +139,25 @@ See [CLI Usage](cli.md#nucleus-trace) for the full flag reference, and open
 the dashboard via the VS Code command **Nucleus: Open Trace Dashboard** (or
 `extension/dist/index.html` standalone) to see the log lines and `temperature`
 chart update live.
+
+## The dashboard (React + Canvas)
+
+The VS Code extension's webview hosts a React dashboard that connects to
+`nucleus trace`'s WebSocket and renders two live views, both pure display —
+per the project's "extension has zero business logic" rule, every decode
+step (packet framing, DWT/ITM disambiguation, variable typing) happens in
+`nucleus-itm`/`nucleus-trace`; the dashboard only draws JSON events it's
+handed:
+
+- **Log panel** — port-0 lines, newest at the bottom.
+- **Variable chart** — a `<canvas>` line plot per `[[trace.variables]]`
+  entry, keyed by name, updating as each decoded value event arrives.
+
+The same dashboard also renders `nucleus history --graph`'s output as a bar
+chart — see [Test History & CI](test-history.md#the-dashboards-history-bar-chart)
+for what that shows and what was descoped from the original design.
+
+## See also
+
+- [Test History & CI](test-history.md) — the dashboard's other data source
+- [Lockstep Co-Execution](lockstep.md) — decodes ITM checkpoints with this same `Translator`/`[trace.variables]` config
