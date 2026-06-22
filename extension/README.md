@@ -1,23 +1,23 @@
 # Nucleus — VS Code extension
 
 A **thin client** for the Nucleus toolchain. It contains zero business logic: all
-diagnostics, hover, and completion come from the Rust language server.
+diagnostics, hover, completion, and CLI work happen in the Rust `nucleus` binary.
 
-## Status (Phases 4 & 6 — complete)
+## What it does
 
-**LSP client** (Phase 4)
+**LSP client**
 - Activates on `workspaceContains:**/stm32.toml`.
 - Spawns `nucleus lsp` (path configurable via `nucleus.serverPath`) and connects
   `vscode-languageclient` over stdio against `**/stm32.toml`.
 - Surfaces the server's diagnostics (red squiggles on pin conflicts), pin hover,
   and pin-name completion in the editor.
 
-**Trace dashboard** (Phase 6)
-- The **Nucleus: Open Trace Dashboard** command (`nucleus.openDashboard`) hosts
-  the React/Canvas dashboard (`src/dashboard/`) in a webview: log stream, live
-  variable charts, and a CPU-load strip, fed by the `nucleus trace` WebSocket
-  (`nucleus.traceWebSocket`, default `ws://localhost:7878`).
-- The same bundle runs standalone in a browser (`dist/index.html`).
+**Sidebar** (Activity Bar → "Nucleus")
+- Four action buttons — **Check / Build / Flash / Test** — each runs the matching
+  `nucleus <verb>` in an integrated terminal (live, colored output). The buttons
+  are pure CLI spawns; no logic lives in the extension.
+- A **test-history** bar chart (`src/dashboard/`, React + Canvas) rendered from
+  `nucleus history --graph`, with a Refresh button.
 
 ## Build
 

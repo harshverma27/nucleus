@@ -1,29 +1,5 @@
-/* Nucleus trace dashboard styling. Dark by default, with a light theme toggle.
-   Colors are CSS variables so the two themes share one layout. */
-
-:root {
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-}
-
-.theme-dark {
-  --bg: #0f1115;
-  --panel: #161a20;
-  --panel-header: #1c2128;
-  --border: #2a313b;
-  --text: #d6dde6;
-  --muted: #8a94a3;
-  --accent: #4fc3f7;
-}
-
-.theme-light {
-  --bg: #f4f6f8;
-  --panel: #ffffff;
-  --panel-header: #eceff3;
-  --border: #d2d8e0;
-  --text: #1c2128;
-  --muted: #5a6675;
-  --accent: #0a84c2;
-}
+/* Nucleus sidebar styling. Uses VS Code theme variables so the panel always
+   matches the active editor theme (light or dark) with no toggle of its own. */
 
 * {
   box-sizing: border-box;
@@ -37,230 +13,97 @@ body,
 }
 
 body {
-  font-family: var(--mono);
-  font-size: 13px;
+  font-family: var(--vscode-font-family, ui-monospace, monospace);
+  font-size: var(--vscode-font-size, 13px);
+  color: var(--vscode-foreground);
 }
 
-.app {
+.sidebar {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--bg);
-  color: var(--text);
 }
 
-/* ---- Header ---- */
-.app-header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 6px 12px;
-  background: var(--panel-header);
-  border-bottom: 1px solid var(--border);
-}
-.brand {
-  font-weight: 600;
-  color: var(--accent);
-}
-.ws-url {
-  color: var(--muted);
-}
-.spacer {
-  flex: 1;
-}
-.overflow-badge {
-  color: #ffb74d;
-}
-.status {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: var(--muted);
-}
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--muted);
-}
-.status-open .status-dot {
-  background: #66bb6a;
-}
-.status-connecting .status-dot {
-  background: #ffd54f;
-}
-.status-closed .status-dot {
-  background: #ef5350;
+/* ---- Action buttons ---- */
+.nucleus-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 10px;
 }
 
 button {
   font-family: inherit;
   font-size: 12px;
-  color: var(--text);
-  background: var(--panel);
-  border: 1px solid var(--border);
+  color: var(--vscode-button-foreground, #fff);
+  background: var(--vscode-button-background, #0e639c);
+  border: 1px solid transparent;
   border-radius: 4px;
-  padding: 3px 9px;
+  padding: 5px 10px;
   cursor: pointer;
 }
 button:hover {
-  border-color: var(--accent);
+  background: var(--vscode-button-hoverBackground, #1177bb);
 }
 
-/* ---- Body / split layout ---- */
-.app-body {
+/* ---- History section ---- */
+.history-wrap {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
+  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
 }
-.split {
+.history-bar {
   display: flex;
-  width: 100%;
-  height: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
 }
-.split-pane {
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
+.section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.8;
 }
-.split-divider {
-  flex: 0 0 6px;
-  background: var(--border);
+.spacer {
+  flex: 1;
 }
-.split-divider-horizontal {
-  cursor: col-resize;
+.history-bar button {
+  color: var(--vscode-foreground);
+  background: transparent;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.4));
 }
-.split-divider-vertical {
-  cursor: row-resize;
-}
-.split-divider:hover {
-  background: var(--accent);
+.history-bar button:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
 }
 
-/* ---- Panels ---- */
+/* HistoryPanel internals (reused component) */
 .panel {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  background: var(--panel);
+  flex: 1;
+  min-height: 0;
 }
 .panel-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 10px;
-  background: var(--panel-header);
-  border-bottom: 1px solid var(--border);
+  padding: 4px 10px;
 }
 .panel-header h2 {
   margin: 0;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--muted);
-}
-.search {
-  font-family: inherit;
-  font-size: 12px;
-  color: var(--text);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 2px 6px;
-}
-.count {
-  color: var(--muted);
-}
-.toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--muted);
-}
-
-/* ---- Log list ---- */
-.log-list {
-  flex: 1;
-  overflow: auto;
-  padding: 4px 0;
-}
-.log-row {
-  display: flex;
-  gap: 10px;
-  padding: 1px 10px;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.log-row:hover {
-  background: rgba(127, 127, 127, 0.08);
-}
-.log-time {
-  color: var(--muted);
-  flex: 0 0 auto;
-}
-.log-msg {
-  flex: 1;
-}
-
-/* ---- Charts ---- */
-.canvas-wrap {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-}
-.canvas-wrap canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-.legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-.legend-item {
-  display: inline-flex;
-  gap: 5px;
-  align-items: baseline;
-}
-.legend-value {
-  color: var(--text);
-}
-.cpu-value {
-  margin-left: auto;
-  font-weight: 600;
-  color: var(--accent);
-}
-
-.empty {
-  color: var(--muted);
-  padding: 10px;
-}
-.overlay {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-/* ---- History mode (M9) ---- */
-.mode-toggle {
-  display: inline-flex;
-  gap: 2px;
-  margin-left: 6px;
-}
-.mode-toggle button.active {
-  border-color: var(--accent);
-  color: var(--accent);
+  opacity: 0.7;
 }
 .history-legend {
   font-size: 11px;
-  color: var(--muted);
+  opacity: 0.8;
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  margin-right: 8px;
 }
 .history-legend .swatch {
   display: inline-block;
@@ -272,16 +115,37 @@ button:hover {
 .history-limit {
   font-family: inherit;
   font-size: 12px;
-  color: var(--text);
-  background: var(--panel);
-  border: 1px solid var(--border);
+  color: var(--vscode-input-foreground, inherit);
+  background: var(--vscode-input-background, transparent);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.4)));
   border-radius: 4px;
-  padding: 2px 6px;
-  margin-right: 6px;
+  padding: 2px 4px;
+}
+.canvas-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 120px;
+  padding: 0 10px;
+}
+.canvas-wrap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 .history-footer {
   font-size: 11px;
-  color: var(--muted);
-  padding: 4px 10px;
-  border-top: 1px solid var(--border);
+  opacity: 0.7;
+  padding: 4px 10px 10px;
+}
+.empty {
+  opacity: 0.7;
+  padding: 10px;
+  font-size: 12px;
+}
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }

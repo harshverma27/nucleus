@@ -1,6 +1,7 @@
-// Nucleus VS Code extension — a thin LSP client. It contains zero business
-// logic: it only spawns `nucleus lsp` and wires the language client to it. All
-// diagnostics, hover, and completion come from the Rust server.
+// Nucleus VS Code extension — a thin client. It contains zero business logic:
+// it spawns `nucleus lsp` for diagnostics/hover/completion, and hosts a sidebar
+// whose buttons shell out to the `nucleus` CLI (check / build / flash / test).
+// All intelligence lives in the Rust binary.
 
 import * as vscode from "vscode";
 import {
@@ -10,23 +11,17 @@ import {
   TransportKind,
 } from "vscode-languageclient/node";
 
-import { openHistory } from "./historyPanel";
-import { openDashboard } from "./tracePanel";
+import { NucleusPanel } from "./panelView";
 
 let client: LanguageClient | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
-  // The trace dashboard command (hosts the React webview).
+  // The sidebar: action buttons + test-history chart. Zero logic — buttons run
+  // `nucleus <verb>` in a terminal; the chart renders `nucleus history --graph`.
   context.subscriptions.push(
-    vscode.commands.registerCommand("nucleus.openDashboard", () =>
-      openDashboard(context)
-    )
-  );
-
-  // History mode: render the ledger trend (M9) in the same webview.
-  context.subscriptions.push(
-    vscode.commands.registerCommand("nucleus.openHistory", () =>
-      openHistory(context)
+    vscode.window.registerWebviewViewProvider(
+      NucleusPanel.viewId,
+      new NucleusPanel(context.extensionUri)
     )
   );
 
