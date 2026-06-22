@@ -104,9 +104,13 @@ fn comparing_two_collections_of_the_same_firmware_agrees() {
 
     let report = lockstep::compare(&trace_a, &trace_b);
     match report {
-        DivergenceReport::Agreement { checkpoints_compared } => {
+        DivergenceReport::Agreement {
+            checkpoints_compared,
+        } => {
             assert!(checkpoints_compared > 0);
         }
-        other => panic!("expected Agreement comparing two runs of identical firmware, got {other:?}"),
+        other => {
+            panic!("expected Agreement comparing two runs of identical firmware, got {other:?}")
+        }
     }
 }

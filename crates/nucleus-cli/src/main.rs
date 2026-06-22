@@ -653,9 +653,9 @@ fn run_test(
 /// or when only one leg could run (nothing to compare).
 fn run_lockstep(path: &Path, explain: bool) -> ExitCode {
     use nucleus_hil::backend::HilError;
+    use nucleus_hil::hardware::HardwareBackend;
     use nucleus_hil::lockstep::{self, DivergenceReport};
     use nucleus_hil::qemu::QemuBackend;
-    use nucleus_hil::hardware::HardwareBackend;
     use nucleus_trace::translate::VariableMap;
 
     let toml_path = path.join("stm32.toml");
@@ -745,7 +745,9 @@ fn run_lockstep(path: &Path, explain: bool) -> ExitCode {
     let report = lockstep::compare(sim_trace, silicon_trace);
 
     match report {
-        DivergenceReport::Agreement { checkpoints_compared } => {
+        DivergenceReport::Agreement {
+            checkpoints_compared,
+        } => {
             println!(
                 "agreement across {checkpoints_compared} checkpoint(s) ({sim_kind:?} vs {silicon_kind:?})"
             );
