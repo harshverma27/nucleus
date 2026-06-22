@@ -32,6 +32,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub mod trend;
+pub use trend::{TrendData, TrendPoint, VerificationReport, REPORT_SCHEMA, TREND_SCHEMA};
+
 /// Directory under the project root that holds the ledger.
 pub const LEDGER_DIR: &str = ".nucleus";
 /// File (inside [`LEDGER_DIR`]) that holds the version list.

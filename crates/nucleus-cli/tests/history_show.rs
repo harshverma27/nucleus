@@ -119,3 +119,85 @@ fn history_empty_when_no_ledger() {
     assert!(out.contains("no versions recorded"), "{out}");
     std::fs::remove_dir_all(&root).ok();
 }
+
+#[test]
+fn history_graph_emits_trend_json() {
+    let root = tempdir();
+    seed(&root);
+
+    let (ok, out) = run(&["history", "--graph"], &root);
+    assert!(ok, "history --graph should exit 0: {out}");
+    assert!(
+        out.contains("\"schema\": \"nucleus.trend.v1\""),
+        "schema: {out}"
+    );
+    assert!(out.contains("\"short\": \"aaaa111\""), "v1 point: {out}");
+    assert!(out.contains("\"short\": \"bbbb222\""), "v2 point: {out}");
+    // v1 has one qemu pass and one hardware fail.
+    assert!(out.contains("\"pass\": 1"), "pass count: {out}");
+    assert!(out.contains("\"fail\": 1"), "fail count: {out}");
+    // v2 carries a conflict.
+    assert!(out.contains("\"conflicts\": 1"), "conflict count: {out}");
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn history_graph_empty_is_valid_json() {
+    let root = tempdir();
+    let (ok, out) = run(&["history", "--graph"], &root);
+    assert!(ok);
+    assert!(out.contains("nucleus.trend.v1"), "{out}");
+    assert!(out.contains("\"points\": []"), "{out}");
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn history_last_limits_table() {
+    let root = tempdir();
+    seed(&root);
+
+    let (ok, out) = run(&["history", "--last", "1"], &root);
+    assert!(ok);
+    // Only the most recent version (bbbb222) should appear.
+    assert!(out.contains("bbbb222"), "{out}");
+    assert!(
+        !out.contains("aaaa111"),
+        "older version must be dropped: {out}"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn report_defaults_to_latest_version() {
+    let root = tempdir();
+    seed(&root);
+
+    let (ok, out) = run(&["report"], &root);
+    assert!(ok, "report should exit 0: {out}");
+    assert!(
+        out.contains("\"schema\": \"nucleus.verification.v1\""),
+        "schema: {out}"
+    );
+    // Latest is bbbb222 (conflicts, no tests).
+    assert!(out.contains("bbbb222"), "latest hash: {out}");
+    assert!(out.contains("\"approved\": false"), "verdict: {out}");
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn report_by_hash_lists_proven_backend() {
+    let root = tempdir();
+    seed(&root);
+
+    let (ok, out) = run(&["report", "aaaa111"], &root);
+    assert!(ok, "report aaaa111 should exit 0: {out}");
+    // qemu passed, hardware failed -> proven_on = ["qemu"].
+    assert!(out.contains("\"proven_on\""), "proven_on field: {out}");
+    assert!(out.contains("\"qemu\""), "qemu proven: {out}");
+    assert!(out.contains("\"approved\": true"), "static check: {out}");
+
+    std::fs::remove_dir_all(&root).ok();
+}

@@ -31,3 +31,32 @@ export interface Series {
 }
 
 export type ConnectionStatus = "connecting" | "open" | "closed";
+
+// History mode (M9). Mirrors nucleus_ledger::trend::{TrendData, TrendPoint,
+// BackendCounts}. Produced by `nucleus history --graph`; the dashboard only
+// renders it (all counting happens in Rust).
+
+export interface BackendCounts {
+  backend: string;
+  pass: number;
+  fail: number;
+  skip: number;
+}
+
+export interface TrendPoint {
+  hash: string;
+  short: string;
+  timestamp: number;
+  family: string;
+  approved: boolean;
+  conflicts: number;
+  backends: BackendCounts[];
+  pass: number;
+  fail: number;
+  skip: number;
+}
+
+export interface TrendData {
+  schema: string;
+  points: TrendPoint[];
+}

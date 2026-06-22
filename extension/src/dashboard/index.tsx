@@ -7,11 +7,15 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 
 import { App } from "./App";
+import { TrendData } from "./types";
 import "./dashboard.css";
 
 declare global {
   interface Window {
     NUCLEUS_WS_URL?: string;
+    // History mode: trend JSON injected by the webview host (`nucleus history
+    // --graph`). Absent in plain trace mode.
+    NUCLEUS_TREND?: TrendData;
   }
 }
 
@@ -27,5 +31,7 @@ function resolveWsUrl(): string {
 
 const container = document.getElementById("root");
 if (container) {
-  createRoot(container).render(<App wsUrl={resolveWsUrl()} />);
+  createRoot(container).render(
+    <App wsUrl={resolveWsUrl()} trend={window.NUCLEUS_TREND} />
+  );
 }

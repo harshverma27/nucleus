@@ -111,6 +111,13 @@ enum Command {
         /// directory).
         #[arg(default_value = ".")]
         path: PathBuf,
+        /// Emit the trend timeline as JSON (for the dashboard / export) instead
+        /// of the human table.
+        #[arg(long)]
+        graph: bool,
+        /// Keep only the most recent N versions.
+        #[arg(long)]
+        last: Option<usize>,
     },
     /// Show full details for one recorded version: verdict, solved config, and
     /// every per-backend test result.
@@ -120,6 +127,17 @@ enum Command {
         /// Project root containing the `.nucleus/` ledger (defaults to current
         /// directory).
         #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+    /// Emit a machine-checkable verification report (JSON) for a version: what
+    /// the verifier proved statically and what each backend proved at runtime.
+    Report {
+        /// Version id (full or short hash prefix). Defaults to the most recent
+        /// recorded version.
+        hash: Option<String>,
+        /// Project root containing the `.nucleus/` ledger (defaults to current
+        /// directory).
+        #[arg(long, default_value = ".")]
         path: PathBuf,
     },
 }
@@ -153,8 +171,9 @@ fn main() -> ExitCode {
             backend,
             test,
         } => run_test(&path, backend, test.as_deref()),
-        Command::History { path } => run_history(&path),
+        Command::History { path, graph, last } => run_history(&path, graph, last),
         Command::Show { hash, path } => run_show(&path, &hash),
+        Command::Report { hash, path } => run_report(&path, hash.as_deref()),
     }
 }
 
@@ -631,7 +650,7 @@ fn run_test(
 /// `nucleus history`: list every recorded version with its verdict and a
 /// per-backend pass/total test summary. Exit `0` always (read-only report);
 /// an unreadable ledger is the only failure.
-fn run_history(path: &Path) -> ExitCode {
+fn run_history(path: &Path, graph: bool, last: Option<usize>) -> ExitCode {
     use nucleus_ledger::{Ledger, Verdict};
 
     let ledger = match Ledger::load(path) {
@@ -642,12 +661,33 @@ fn run_history(path: &Path) -> ExitCode {
         }
     };
 
+    // `--graph` emits the deterministic trend JSON (the dashboard data source
+    // and export format). It prints `{ ... }` even for an empty ledger so
+    // consumers always get valid JSON.
+    if graph {
+        let trend = ledger.trend(last);
+        match serde_json::to_string_pretty(&trend) {
+            Ok(json) => {
+                println!("{json}");
+                return ExitCode::SUCCESS;
+            }
+            Err(err) => {
+                eprintln!("error: cannot serialize trend: {err}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
     if ledger.versions.is_empty() {
         println!("no versions recorded yet — run `nucleus build` then `nucleus test`.");
         return ExitCode::SUCCESS;
     }
 
-    for version in &ledger.versions {
+    let start = match last {
+        Some(n) if n < ledger.versions.len() => ledger.versions.len() - n,
+        _ => 0,
+    };
+    for version in &ledger.versions[start..] {
         let verdict = match &version.verdict {
             Verdict::Approved => "approved".to_string(),
             Verdict::Conflicts(c) => format!("{} conflict(s)", c.len()),
@@ -731,6 +771,51 @@ fn run_show(path: &Path, query: &str) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// `nucleus report [hash]`: emit the machine-checkable verification report
+/// (JSON) for a version — what was proven statically and on which backend.
+/// Defaults to the most recent recorded version. Exit `1` if the ledger is
+/// empty or the hash can't be resolved.
+fn run_report(path: &Path, query: Option<&str>) -> ExitCode {
+    use nucleus_ledger::{Ledger, VerificationReport};
+
+    let ledger = match Ledger::load(path) {
+        Ok(l) => l,
+        Err(err) => {
+            eprintln!("error: cannot read ledger: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let version = match query {
+        Some(q) => match ledger.find(q) {
+            Ok(v) => v,
+            Err(err) => {
+                eprintln!("error: {err}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => match ledger.versions.last() {
+            Some(v) => v,
+            None => {
+                eprintln!("error: no versions recorded — run `nucleus build` first.");
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+
+    let report = VerificationReport::for_version(version);
+    match serde_json::to_string_pretty(&report) {
+        Ok(json) => {
+            println!("{json}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("error: cannot serialize report: {err}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Format unix-epoch seconds as `YYYY-MM-DD HH:MM:SSZ` (UTC), without pulling in

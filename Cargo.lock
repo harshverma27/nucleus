@@ -633,6 +633,7 @@ dependencies = [
  "nucleus-ledger",
  "nucleus-lsp",
  "nucleus-trace",
+ "serde_json",
 ]
 
 [[package]]

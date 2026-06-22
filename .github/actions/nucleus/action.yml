@@ -1,5 +1,5 @@
 name: "Nucleus check"
-description: "Validate stm32.toml with the Nucleus constraint solver (and optionally build firmware), and post a PR summary."
+description: "Validate stm32.toml with the Nucleus constraint solver, optionally build firmware, run HIL tests on both backends, and post a PR summary with a machine-checkable verification report."
 branding:
   icon: "cpu"
   color: "blue"
@@ -11,6 +11,14 @@ inputs:
     default: "stm32.toml"
   build:
     description: "Also run `nucleus build` (requires the ARM toolchain in the runner)."
+    required: false
+    default: "false"
+  run_tests:
+    description: "Run `nucleus test` after building (QEMU always; hardware when the hardware leg is enabled). Requires `build: true`."
+    required: false
+    default: "true"
+  hardware:
+    description: "Also run the hardware test leg (needs a self-hosted runner with a connected board + OpenOCD). Off by default; the report records it as skipped."
     required: false
     default: "false"
   version:
@@ -29,6 +37,12 @@ outputs:
   firmware-size:
     description: "Size of the built firmware.bin in bytes (empty if not built)."
     value: ${{ steps.build.outputs.size }}
+  qemu-passed:
+    description: "Assertions passed on the QEMU backend (empty if tests didn't run)."
+    value: ${{ steps.test_qemu.outputs.passed }}
+  hardware-passed:
+    description: "Assertions passed on the hardware backend (empty if the leg was skipped)."
+    value: ${{ steps.test_hw.outputs.passed }}
 
 runs:
   using: "composite"
@@ -77,6 +91,82 @@ runs:
           echo "size=$size" >> "$GITHUB_OUTPUT"
         fi
 
+    # QEMU is always available on GitHub-hosted Linux runners (via apt). The
+    # emulator leg therefore runs on every CI, with no special hardware.
+    - name: Install QEMU (emulator backend)
+      if: ${{ inputs.build == 'true' && inputs.run_tests == 'true' && runner.os == 'Linux' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v qemu-system-arm >/dev/null 2>&1; then
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-arm
+        fi
+
+    - name: nucleus test (QEMU)
+      id: test_qemu
+      if: ${{ inputs.build == 'true' && inputs.run_tests == 'true' }}
+      shell: bash
+      run: |
+        set +e
+        out="$(nucleus test --backend qemu 2>&1)"
+        code=$?
+        echo "$out"
+        passed=$(printf '%s\n' "$out" | grep -c 'PASS' || true)
+        failed=$(printf '%s\n' "$out" | grep -c 'FAIL' || true)
+        skipped=$(printf '%s\n' "$out" | grep -c 'SKIP' || true)
+        {
+          echo "passed=$passed"
+          echo "failed=$failed"
+          echo "skipped=$skipped"
+        } >> "$GITHUB_OUTPUT"
+        exit $code
+
+    # The hardware leg only runs when explicitly enabled (self-hosted runner +
+    # board). When off it is reported as "skipped", never as a failure — the
+    # action degrades gracefully so it stays green on hosted runners.
+    - name: nucleus test (hardware)
+      id: test_hw
+      if: ${{ inputs.build == 'true' && inputs.run_tests == 'true' && inputs.hardware == 'true' }}
+      shell: bash
+      run: |
+        set +e
+        out="$(nucleus test --backend hardware 2>&1)"
+        code=$?
+        echo "$out"
+        passed=$(printf '%s\n' "$out" | grep -c 'PASS' || true)
+        failed=$(printf '%s\n' "$out" | grep -c 'FAIL' || true)
+        skipped=$(printf '%s\n' "$out" | grep -c 'SKIP' || true)
+        {
+          echo "passed=$passed"
+          echo "failed=$failed"
+          echo "skipped=$skipped"
+        } >> "$GITHUB_OUTPUT"
+        exit $code
+
+    # Deterministic, machine-checkable verification report for the version that
+    # was just built/tested (the latest ledger entry).
+    - name: Verification report
+      id: report
+      if: ${{ always() && inputs.build == 'true' }}
+      shell: bash
+      run: |
+        set +e
+        nucleus report > "$RUNNER_TEMP/nucleus-report.json" 2>/dev/null
+        if [ -s "$RUNNER_TEMP/nucleus-report.json" ]; then
+          echo "ok=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "ok=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Upload verification report
+      if: ${{ always() && steps.report.outputs.ok == 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: nucleus-verification-report
+        path: ${{ runner.temp }}/nucleus-report.json
+        if-no-files-found: ignore
+
     - name: Build summary
       if: ${{ always() }}
       shell: bash
@@ -84,6 +174,7 @@ runs:
         check_out="$(cat "$RUNNER_TEMP/nucleus-check.txt" 2>/dev/null || echo '(no output)')"
         conflicts="${{ steps.check.outputs.conflicts }}"
         size="${{ steps.build.outputs.size }}"
+        report="$RUNNER_TEMP/nucleus-report.json"
         {
           echo "## 🧩 Nucleus"
           echo
@@ -95,6 +186,33 @@ runs:
             echo "- ❌ **${conflicts:-?} conflict(s)** detected."
           fi
           [ -n "$size" ] && echo "- 📦 Firmware size: **$size bytes**"
+
+          # Per-backend test results, with graceful degradation.
+          if [ "${{ inputs.build }}" = "true" ] && [ "${{ inputs.run_tests }}" = "true" ]; then
+            echo "- 🧪 **Tests:**"
+            qp="${{ steps.test_qemu.outputs.passed }}"
+            qf="${{ steps.test_qemu.outputs.failed }}"
+            if [ -n "$qp" ]; then
+              echo "    - QEMU: **${qp} passed**, ${qf:-0} failed"
+            else
+              echo "    - QEMU: emulator leg skipped"
+            fi
+            if [ "${{ inputs.hardware }}" = "true" ]; then
+              hp="${{ steps.test_hw.outputs.passed }}"
+              hf="${{ steps.test_hw.outputs.failed }}"
+              echo "    - Hardware: **${hp:-0} passed**, ${hf:-0} failed"
+            else
+              echo "    - Hardware: leg skipped (no self-hosted board)"
+            fi
+          fi
+
+          # Machine-checkable verification report summary.
+          if [ -s "$report" ] && command -v jq >/dev/null 2>&1; then
+            proven="$(jq -r '.proven_on | join(", ")' "$report")"
+            short="$(jq -r '.short' "$report")"
+            echo "- 🔏 **Verification report** (version \`${short}\`): proven on **${proven:-none}** — see the \`nucleus-verification-report\` artifact."
+          fi
+
           echo
           echo '```'
           echo "$check_out"
