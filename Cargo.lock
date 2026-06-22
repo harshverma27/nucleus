@@ -658,6 +658,7 @@ dependencies = [
  "nucleus-compiler",
  "nucleus-db",
  "nucleus-itm",
+ "nucleus-test-sdk",
  "nucleus-trace",
  "tokio",
 ]

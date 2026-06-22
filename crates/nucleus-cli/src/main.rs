@@ -461,61 +461,64 @@ fn run_test(
         .cloned()
         .partition(|t| matches!(t.body, TestBody::Scripted { .. }));
 
-    let elf = path.join("build/firmware");
-    let bin = path.join("build/firmware.bin");
-    if !elf.exists() || !bin.exists() {
-        eprintln!(
-            "error: {} not found. Run `nucleus build` first.",
-            bin.display()
-        );
-        return ExitCode::FAILURE;
-    }
-    let firmware = FirmwareArtifact { elf, bin };
+    let mut any_failed = false;
 
-    let check_report = match nucleus_compiler::check(&text) {
-        Ok(report) => report,
-        Err(err) => {
-            print_parse_error(&toml_path, &err);
+    if !declarative.is_empty() {
+        let elf = path.join("build/firmware");
+        let bin = path.join("build/firmware.bin");
+        if !elf.exists() || !bin.exists() {
+            eprintln!(
+                "error: {} not found. Run `nucleus build` first.",
+                bin.display()
+            );
             return ExitCode::FAILURE;
         }
-    };
+        let firmware = FirmwareArtifact { elf, bin };
 
-    let mut backends: Vec<Box<dyn Backend>> = Vec::new();
-    match backend_filter {
-        None => {
-            backends.push(Box::new(QemuBackend::default()));
-            backends.push(Box::new(HardwareBackend::default()));
-        }
-        Some(BackendArg::Qemu) => backends.push(Box::new(QemuBackend::default())),
-        Some(BackendArg::Hardware) => backends.push(Box::new(HardwareBackend::default())),
-    }
-
-    let mut any_failed = false;
-    for mut backend in backends {
-        let kind = backend.name();
-        match backend.start(&firmware, &check_report) {
-            Err(err @ HilError::ToolMissing(_)) => {
-                println!("skipped: {kind:?} ({err})");
-            }
+        let check_report = match nucleus_compiler::check(&text) {
+            Ok(report) => report,
             Err(err) => {
-                eprintln!("error: {kind:?} failed to start: {err}");
-                any_failed = true;
+                print_parse_error(&toml_path, &err);
+                return ExitCode::FAILURE;
             }
-            Ok(()) => {
-                let outcomes = run_tests(backend.as_mut(), &declarative);
-                let _ = backend.finish();
-                for outcome in &outcomes {
-                    let status_icon = match outcome.status {
-                        TestStatus::Passed => "PASS",
-                        TestStatus::Failed => "FAIL",
-                        TestStatus::Skipped => "SKIP",
-                    };
-                    println!(
-                        "  {status_icon} {} [{kind:?}]: {}",
-                        outcome.name, outcome.detail
-                    );
-                    if outcome.status == TestStatus::Failed {
-                        any_failed = true;
+        };
+
+        let mut backends: Vec<Box<dyn Backend>> = Vec::new();
+        match backend_filter {
+            None => {
+                backends.push(Box::new(QemuBackend::default()));
+                backends.push(Box::new(HardwareBackend::default()));
+            }
+            Some(BackendArg::Qemu) => backends.push(Box::new(QemuBackend::default())),
+            Some(BackendArg::Hardware) => backends.push(Box::new(HardwareBackend::default())),
+        }
+
+        for mut backend in backends {
+            let kind = backend.name();
+            match backend.start(&firmware, &check_report) {
+                Err(err @ HilError::ToolMissing(_)) => {
+                    println!("skipped: {kind:?} ({err})");
+                }
+                Err(err) => {
+                    eprintln!("error: {kind:?} failed to start: {err}");
+                    any_failed = true;
+                }
+                Ok(()) => {
+                    let outcomes = run_tests(backend.as_mut(), &declarative);
+                    let _ = backend.finish();
+                    for outcome in &outcomes {
+                        let status_icon = match outcome.status {
+                            TestStatus::Passed => "PASS",
+                            TestStatus::Failed => "FAIL",
+                            TestStatus::Skipped => "SKIP",
+                        };
+                        println!(
+                            "  {status_icon} {} [{kind:?}]: {}",
+                            outcome.name, outcome.detail
+                        );
+                        if outcome.status == TestStatus::Failed {
+                            any_failed = true;
+                        }
                     }
                 }
             }
