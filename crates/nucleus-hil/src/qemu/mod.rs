@@ -82,6 +82,10 @@ pub struct QemuBackend {
     itm_read_offset: u64,
     itm_decoder: Decoder,
     gdb_port: u16,
+    /// TCP port USART2 is exposed on (`-serial tcp::<port>,server,nowait`,
+    /// QEMU's `serial_hd(1)` on `netduinoplus2`). 0 until `start()` runs. The
+    /// scripted-UART test connects here to drive the device UART loopback.
+    usart_port: u16,
 }
 
 impl QemuBackend {
@@ -92,6 +96,17 @@ impl QemuBackend {
             self.failure = Some(err.to_string());
         }
         err
+    }
+
+    /// TCP port USART2 is exposed on once the backend is running, for a
+    /// host-side `Serial::open_tcp("127.0.0.1:<port>")`. `None` until `start()`
+    /// has spawned QEMU (so callers don't connect to a stale/zero port).
+    pub fn serial_port(&self) -> Option<u16> {
+        if self.process.is_some() {
+            Some(self.usart_port)
+        } else {
+            None
+        }
     }
 }
 
@@ -122,6 +137,17 @@ impl Backend for QemuBackend {
         let gdb_port = crate::free_port().map_err(HilError::Io)?;
         self.gdb_port = gdb_port;
 
+        // USART2 on `netduinoplus2` is wired to `serial_hd(1)` (the SECOND
+        // `-serial` arg), fully bidirectional: bytes written to this socket
+        // appear on USART2 RX, and USART2 TX bytes appear on the socket
+        // (confirmed empirically against qemu-system-arm 11.0.0). `-serial
+        // null` first claims `serial_hd(0)` (USART1, unused here) so the TCP
+        // socket lands on slot 1. `-display none` (not `-nographic`) suppresses
+        // the GUI without implicitly claiming `serial_hd(0)`, which would
+        // shift the slot ordering and break this mapping.
+        let usart_port = crate::free_port().map_err(HilError::Io)?;
+        self.usart_port = usart_port;
+
         let child = Command::new("qemu-system-arm")
             .arg("-machine")
             .arg("netduinoplus2")
@@ -129,7 +155,12 @@ impl Backend for QemuBackend {
             .arg("cortex-m4")
             .arg("-kernel")
             .arg(&firmware.elf)
-            .arg("-nographic")
+            .arg("-display")
+            .arg("none")
+            .arg("-serial")
+            .arg("null")
+            .arg("-serial")
+            .arg(format!("tcp::{usart_port},server,nowait"))
             .arg("-gdb")
             .arg(format!("tcp::{gdb_port}"))
             .arg("-S")
@@ -320,6 +351,21 @@ impl Backend for QemuBackend {
     }
 }
 
+/// Reap the `qemu-system-arm` child even when `finish()` is never reached —
+/// e.g. a panicking test unwinds past it. Without this, a failed test leaks a
+/// running QEMU that holds its gdb/serial ports until killed by hand.
+impl Drop for QemuBackend {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.process.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        if let Some(path) = self.itm_log_path.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
 /// QEMU needs a moment to open its `-gdb` listening socket after spawn;
 /// retry the connect briefly rather than failing on the first attempt. Bails
 /// immediately (rather than waiting out the full timeout) if `child` has
@@ -376,11 +422,12 @@ channel1 = "PA5"
         let _ = std::fs::remove_file(&path);
         std::fs::write(&path, [0x01, b'O', 0x01, b'K']).unwrap();
 
-        let mut backend = QemuBackend {
-            itm_log_path: Some(path.clone()),
-            runtime: Some(tokio::runtime::Runtime::new().unwrap()),
-            ..Default::default()
-        };
+        // Built field-by-field rather than with `..Default::default()`:
+        // QemuBackend implements Drop, which forbids the functional-update
+        // move out of a temporary.
+        let mut backend = QemuBackend::default();
+        backend.itm_log_path = Some(path.clone());
+        backend.runtime = Some(tokio::runtime::Runtime::new().unwrap());
 
         let first = backend
             .await_itm_event(Duration::from_millis(200))
@@ -399,10 +446,8 @@ channel1 = "PA5"
 
     #[test]
     fn finish_reports_failed_not_completed_after_a_recorded_failure() {
-        let mut backend = QemuBackend {
-            start_time: Some(Instant::now()),
-            ..Default::default()
-        };
+        let mut backend = QemuBackend::default();
+        backend.start_time = Some(Instant::now());
         backend.record_failure(HilError::Protocol("target hung up mid-run".to_string()));
         let result = backend.finish();
         assert!(matches!(result.status, RunStatus::Failed { .. }));
@@ -410,10 +455,8 @@ channel1 = "PA5"
 
     #[test]
     fn record_failure_ignores_expected_not_observable_gaps() {
-        let mut backend = QemuBackend {
-            start_time: Some(Instant::now()),
-            ..Default::default()
-        };
+        let mut backend = QemuBackend::default();
+        backend.start_time = Some(Instant::now());
         backend.record_failure(HilError::NotObservable {
             peripheral: "GPIO".to_string(),
         });

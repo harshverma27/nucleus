@@ -51,11 +51,29 @@ impl<'a> AgentClient<'a> {
         }
     }
 
-    /// Verify the agent is alive: read magic + version.
+    /// Verify the agent is alive: poll for the magic word, then read version.
+    ///
+    /// The magic is published by the agent only after it finishes booting
+    /// (clocks/USART/GPIO init), and the agent writes it LAST so a non-zero
+    /// magic always implies a fully-initialized mailbox. A bare single read
+    /// races that boot — on a backend that halts the target the instant the
+    /// host attaches (QEMU's `-S` stub), the first read can land before the
+    /// agent has run far enough to set the magic, yielding 0. So poll up to
+    /// `poll_timeout` for the magic to appear; a still-zero magic past the
+    /// deadline is reported as `BadMagic`, a genuinely wrong magic fails fast.
     pub fn connect(&mut self) -> Result<u32, SdkError> {
-        let magic = self.backend.read_mem32(self.base + OFF_MAGIC)?;
-        if magic != MAGIC {
-            return Err(SdkError::BadMagic(magic));
+        let deadline = Instant::now() + self.poll_timeout;
+        loop {
+            let magic = self.backend.read_mem32(self.base + OFF_MAGIC)?;
+            if magic == MAGIC {
+                break;
+            }
+            // A non-zero, non-matching magic is a real mismatch, not a boot
+            // race — fail immediately rather than waiting out the timeout.
+            if magic != 0 || Instant::now() >= deadline {
+                return Err(SdkError::BadMagic(magic));
+            }
+            std::thread::sleep(Duration::from_millis(5));
         }
         let version = self.backend.read_mem32(self.base + OFF_VERSION)?;
         if version != PROTO_VERSION {
