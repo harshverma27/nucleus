@@ -1,27 +1,24 @@
-# Trace dashboard (React + Canvas)
+# Sidebar dashboard (React + Canvas)
 
-The real-time ITM trace UI. A single bundle that runs **identically** in a VS
-Code webview and a standalone browser — both connect to the `nucleus trace`
-WebSocket (`ws://localhost:7878` by default).
+The webview rendered inside the **Nucleus** Activity Bar view. A single esbuild
+bundle (`dist/dashboard.js` + `dashboard.css`) hosted by `src/panelView.ts`.
 
-## Status (Phase 6 — complete)
+## What it renders
 
-- **Log panel** (`LogPanel.tsx`) — port-0 output, timestamped, with live
-  search/filter, follow-tail, clear, and **export as text**.
-- **Variable timeline** (`VariableChart.tsx`) — a live Canvas line chart of up
-  to 7 traced variables (ports 1–7) with an auto-scaling Y axis and a rolling
-  30 s window; a legend shows current values.
-- **CPU-load strip** (`CpuLoadPanel.tsx`) — a filled Canvas strip chart of the
-  utilization estimate the daemon derives from DWT PC-sampling packets.
-- **Polish** — resizable panels (`SplitPane.tsx`), dark/light theme toggle,
-  connection status, overflow badge.
+- **Action buttons** (`Sidebar.tsx`) — Check / Build / Flash / Test. Each posts
+  `{type:"run", verb}` to the extension host, which runs `nucleus <verb>` in a
+  terminal. No CLI logic here — the host owns the spawn (and whitelists the verb).
+- **Test-history chart** (`HistoryPanel.tsx`) — a per-run pass/fail stacked-bar
+  Canvas chart with a "last N" filter and JSON export. The counts come
+  pre-computed from `nucleus history --graph`; this panel only draws them.
 
-Data flows through a plain `TraceStore` (mutated in place at the trace data
-rate) and the UI re-reads it on an animation-frame tick (`useTick`), so
-sub-millisecond data rates don't drown React in re-renders. Buffers are capped.
+## Data flow
 
-`types.ts`'s `TraceEvent` mirrors `nucleus-trace::translate::TraceEvent` — the
-only coupling between daemon and dashboard.
+`index.tsx` grabs the VS Code webview API (`acquireVsCodeApi`), renders
+`<Sidebar>`, and listens for `{type:"history", data}` messages from the host
+(pushed on open and on Refresh). `types.ts` mirrors
+`nucleus_history::{RunSummary, HistorySummary}` — the only coupling between the
+CLI and the dashboard.
 
 ## Build
 
@@ -33,6 +30,5 @@ npm install
 npm run build         # -> dist/dashboard.js, dist/dashboard.css, dist/index.html
 ```
 
-Open `dist/index.html` in a browser for the standalone view, or run
-**Nucleus: Open Trace Dashboard** in VS Code for the webview. Either way, start
-`nucleus trace` first.
+The real host is the VS Code sidebar; `dist/index.html` is a standalone fallback
+(no history feed, so it just shows the buttons).

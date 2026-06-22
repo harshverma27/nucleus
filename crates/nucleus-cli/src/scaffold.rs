@@ -568,6 +568,8 @@ jobs:
         run: nucleus check
 "#;
 
+// `tests/test_history.json` is intentionally NOT ignored: the test history is
+// committed so it travels with the repo and CI can read it.
 const GITIGNORE: &str = "/build/\n/src/generated/\n*.elf\n*.bin\n*.hex\n*.map\n";
 
 #[cfg(test)]

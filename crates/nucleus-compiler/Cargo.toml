@@ -15,6 +15,7 @@ categories = ["embedded", "development-tools::build-utils", "parser-implementati
 nucleus-db = { path = "../nucleus-db", version = "0.1.0" }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+toml_edit = "0.22"
 
 [lints]
 workspace = true

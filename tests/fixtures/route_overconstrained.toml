@@ -1,0 +1,8 @@
+# M4 failure fixture: USART2_TX's only candidate pin on the F446 is PA2.
+# tim5's channel3 pre-occupies PA2, leaving USART2_TX with zero free
+# candidates -> the router must report it Unroutable rather than silently
+# failing or picking a wrong pin.
+[peripherals.tim5]
+channel3 = "PA2"
+
+[peripherals.usart2]

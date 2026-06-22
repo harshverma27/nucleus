@@ -1,7 +1,7 @@
 {
   "name": "nucleus-vscode",
   "displayName": "Nucleus",
-  "description": "Live stm32.toml diagnostics, hover, pin completion, and a real-time ITM trace dashboard — a thin client for the nucleus CLI.",
+  "description": "stm32.toml diagnostics, hover, pin completion, and a one-click sidebar (check / build / flash / test) — a thin client for the nucleus CLI.",
   "version": "0.1.0",
   "publisher": "harshverma27",
   "license": "MIT OR Apache-2.0",
@@ -18,28 +18,36 @@
     "Visualization"
   ],
   "activationEvents": [
-    "workspaceContains:**/stm32.toml"
+    "workspaceContains:**/stm32.toml",
+    "onView:nucleus.panel"
   ],
   "main": "./dist/extension.js",
   "contributes": {
-    "commands": [
-      {
-        "command": "nucleus.openDashboard",
-        "title": "Nucleus: Open Trace Dashboard"
-      }
-    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "nucleus",
+          "title": "Nucleus",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "nucleus": [
+        {
+          "id": "nucleus.panel",
+          "type": "webview",
+          "name": "Nucleus"
+        }
+      ]
+    },
     "configuration": {
       "title": "Nucleus",
       "properties": {
         "nucleus.serverPath": {
           "type": "string",
           "default": "nucleus",
-          "description": "Path to the `nucleus` CLI. The extension runs `nucleus lsp`."
-        },
-        "nucleus.traceWebSocket": {
-          "type": "string",
-          "default": "ws://localhost:7878",
-          "description": "WebSocket the trace dashboard connects to (served by `nucleus trace`)."
+          "description": "Path to the `nucleus` CLI. The extension runs `nucleus lsp` and the sidebar verbs (check / build / flash / test)."
         },
         "nucleus.trace.server": {
           "type": "string",

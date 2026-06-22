@@ -1,0 +1,22 @@
+[package]
+name = "nucleus-test-sdk"
+description = "Nucleus M7 host SDK: drive the device test-agent over the SWD RAM mailbox and the UART VCP"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["stm32", "hil", "testing", "swd"]
+categories = ["embedded", "development-tools::testing"]
+
+[dependencies]
+nucleus-hil = { path = "../nucleus-hil", version = "0.1.0" }
+nucleus-db = { path = "../nucleus-db", version = "0.1.0" }
+serialport = "4"
+
+[dev-dependencies]
+nucleus-compiler = { path = "../nucleus-compiler", version = "0.1.0" }
+
+[lints]
+workspace = true

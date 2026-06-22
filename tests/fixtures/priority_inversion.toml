@@ -1,0 +1,13 @@
+# Deliberate warning-only conflict: dma_priority (5) > irq_priority (2) on the
+# same peripheral (USART2). This is a Severity::Warning, not an Error, so
+# `nucleus check` must still print it (prefixed "warning:") but exit zero.
+[device]
+family = "STM32F446RE"
+
+[peripherals.usart2]
+tx = "PA2"
+rx = "PA3"
+irq = true
+irq_priority = 2
+dma = true
+dma_priority = 5

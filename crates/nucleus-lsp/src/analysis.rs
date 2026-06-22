@@ -14,6 +14,7 @@ use std::str::FromStr;
 
 use nucleus_compiler::check_family;
 use nucleus_compiler::solver::Conflict;
+use nucleus_compiler::Severity;
 use nucleus_db::{Database, Pin};
 use tower_lsp::lsp_types::{
     CompletionItem, CompletionItemKind, Diagnostic, DiagnosticSeverity, Documentation, Hover,
@@ -117,17 +118,33 @@ pub fn diagnostics(text: &str) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     for conflict in &report.conflicts {
         let message = conflict.to_string();
+        let severity = lsp_severity(conflict.severity());
         for span in conflict_spans(text, conflict, &name_to_key) {
-            out.push(error(li.range(span), message.clone()));
+            out.push(diagnostic(li.range(span), severity, message.clone()));
         }
     }
     out
 }
 
+/// Maps a solver [`Severity`] to the LSP severity it should render as.
+/// Every conflict predating M3 is [`Severity::Error`] (unchanged behavior);
+/// M3's [`Conflict::IrqConflict`] is the first to ever produce
+/// [`DiagnosticSeverity::WARNING`] here.
+fn lsp_severity(severity: Severity) -> DiagnosticSeverity {
+    match severity {
+        Severity::Error => DiagnosticSeverity::ERROR,
+        Severity::Warning => DiagnosticSeverity::WARNING,
+    }
+}
+
 fn error(range: LspRange, message: String) -> Diagnostic {
+    diagnostic(range, DiagnosticSeverity::ERROR, message)
+}
+
+fn diagnostic(range: LspRange, severity: DiagnosticSeverity, message: String) -> Diagnostic {
     Diagnostic {
         range,
-        severity: Some(DiagnosticSeverity::ERROR),
+        severity: Some(severity),
         source: Some("nucleus".to_string()),
         message,
         ..Diagnostic::default()
@@ -187,6 +204,48 @@ fn conflict_spans(
                 .and_then(|key| header_span(text, key)),
             text,
         ),
+        // A clock constraint's `node` is either a peripheral DB name (a baud
+        // reachability error → underline that table) or a clock-tree node like
+        // `APB1`/`PLL` (→ underline the `[clocks]` header).
+        Conflict::ClockConstraint { node, .. } => single(
+            name_to_key
+                .get(node)
+                .and_then(|key| header_span(text, key))
+                .or_else(|| clocks_header_span(text)),
+            text,
+        ),
+        // A DMA collision underlines the first contender's table header.
+        Conflict::DmaCollision { first, .. } => single(
+            name_to_key
+                .get(first)
+                .and_then(|key| header_span(text, key)),
+            text,
+        ),
+        // An IRQ conflict's `node` is either a peripheral DB name
+        // (unhandled/priority-inversion → underline that table) or a pin
+        // string like `"PA0"` (EXTI collision → text-search the whole
+        // document for the quoted pin as a fallback).
+        Conflict::IrqConflict { node, .. } => single(
+            name_to_key
+                .get(node)
+                .and_then(|key| header_span(text, key))
+                .or_else(|| find_pin_anywhere(text, node)),
+            text,
+        ),
+        // An unroutable node's `node` is either a peripheral DB name
+        // (or a composite like `"USART2_TX"` which will not match any
+        // table header, falling through gracefully to the whole-first-line default).
+        Conflict::Unroutable { node, .. } => single(
+            name_to_key
+                .get(node)
+                .and_then(|key| header_span(text, key))
+                .or_else(|| find_pin_anywhere(text, node)),
+            text,
+        ),
+        // An invalid test's `node` is the `[[test]]` block's `name` field
+        // (never a peripheral DB name) — underline its quoted value anywhere
+        // in the document.
+        Conflict::InvalidTest { node, .. } => single(find_pin_anywhere(text, node), text),
     }
 }
 
@@ -203,6 +262,12 @@ fn header_span(text: &str, key: &str) -> Option<Range<usize>> {
     let header = format!("[peripherals.{key}]");
     let start = text.find(&header)?;
     Some(start..start + header.len())
+}
+
+/// The byte range of the `[clocks]` table header, if present.
+fn clocks_header_span(text: &str) -> Option<Range<usize>> {
+    let start = text.find("[clocks]")?;
+    Some(start..start + "[clocks]".len())
 }
 
 /// The body region of a `[peripherals.<key>]` table: from its header to the next
@@ -232,10 +297,60 @@ fn find_quoted(text: &str, region: Range<usize>, value: &str) -> Option<Range<us
     None
 }
 
+/// The span of `pin_str` (e.g. `"PA0"`) where it appears quoted anywhere in
+/// the document — the fallback used when a conflict's node is a pin string
+/// rather than a peripheral name with a table to underline (e.g. an EXTI
+/// collision's quoted `pin = "PA0"` value).
+fn find_pin_anywhere(text: &str, pin_str: &str) -> Option<Range<usize>> {
+    find_quoted(text, 0..text.len(), pin_str)
+}
+
+/// The byte range of the line (excluding its trailing newline) containing `offset`.
+fn current_line(text: &str, offset: usize) -> Range<usize> {
+    let offset = offset.min(text.len());
+    let start = text[..offset].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let end = text[offset..]
+        .find('\n')
+        .map(|rel| offset + rel)
+        .unwrap_or(text.len());
+    start..end
+}
+
+/// Whether the line at `offset`, trimmed, starts with `key` followed by `=`
+/// (e.g. `assertion = "..."` or `backend = "qemu"`).
+fn line_starts_with_key(text: &str, offset: usize, key: &str) -> bool {
+    let line = &text[current_line(text, offset)];
+    let trimmed = line.trim_start();
+    trimmed
+        .strip_prefix(key)
+        .map(|rest| rest.trim_start().starts_with('='))
+        .unwrap_or(false)
+}
+
 /// Hover for the pin name under the cursor: its full alternate-function table.
+/// Also handles hovering over a `[[test]]` block's `assertion` value, showing
+/// the supported grammar forms.
 pub fn hover(text: &str, position: Position) -> Option<Hover> {
     let li = LineIndex::new(text);
     let offset = li.offset(position);
+
+    if line_starts_with_key(text, offset, "assertion") {
+        let span = current_line(text, offset);
+        let md = "**Test assertion grammar**\n\n\
+            - `pin <PIN> toggles at <N>Hz ±<N>%`\n\
+            - `pin <PIN> is <high|low> within <N>ms`\n\
+            - `<PERIPHERAL> echoes \"<text>\" within <N>ms`\n\
+            - `trace event \"<pattern>\" within <N>ms`\n"
+            .to_string();
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: md,
+            }),
+            range: Some(li.range(span)),
+        });
+    }
+
     let (token, span) = token_at(text, offset)?;
     let pin = Pin::from_str(&token).ok()?;
 
@@ -264,11 +379,39 @@ pub fn hover(text: &str, position: Position) -> Option<Hover> {
     })
 }
 
+/// Whether `offset` sits on a `backend = ` value line (e.g. inside a
+/// `[[test]]` block).
+fn is_backend_value_position(text: &str, offset: usize) -> bool {
+    line_starts_with_key(text, offset, "backend")
+}
+
+/// The three valid `[[test]]` `backend` values.
+fn backend_completions() -> Vec<CompletionItem> {
+    [
+        ("qemu", "run on QEMU only"),
+        ("hardware", "run on hardware only"),
+        ("both", "run on both backends (default)"),
+    ]
+    .into_iter()
+    .map(|(label, detail)| CompletionItem {
+        label: label.to_string(),
+        kind: Some(CompletionItemKind::VALUE),
+        detail: Some(detail.to_string()),
+        ..CompletionItem::default()
+    })
+    .collect()
+}
+
 /// Pin-name completions, offered when the cursor sits on a value line inside a
-/// `[peripherals.…]` table.
+/// `[peripherals.…]` table; `backend` value completions inside a `[[test]]`
+/// block.
 pub fn completion(text: &str, position: Position) -> Vec<CompletionItem> {
     let li = LineIndex::new(text);
     let offset = li.offset(position);
+
+    if is_backend_value_position(text, offset) {
+        return backend_completions();
+    }
 
     if !in_peripheral_value_position(text, offset) {
         return Vec::new();
@@ -403,6 +546,153 @@ mod tests {
     }
 
     #[test]
+    fn clock_constraint_underlines_clocks_table() {
+        // Over-clocked APB1 -> a clock constraint pointing at the [clocks] header.
+        let text =
+            "[device]\nfamily = \"STM32F446RE\"\n\n[clocks]\npll_m = 8\npll_n = 360\npll_p = 2\napb1_prescaler = 1\n";
+        let diags = diagnostics(text);
+        assert_eq!(diags.len(), 1, "got {diags:?}");
+        assert!(diags[0].message.contains("clock constraint"));
+        let src_line = text
+            .lines()
+            .nth(diags[0].range.start.line as usize)
+            .unwrap();
+        assert!(src_line.contains("[clocks]"), "underlined: {src_line}");
+    }
+
+    #[test]
+    fn dma_collision_underlines_first_peripheral_table() {
+        let text = "[device]\nfamily = \"STM32F446RE\"\n\n[peripherals.i2c1]\nsda = \"PB7\"\nscl = \"PB6\"\ndma = [\"rx\"]\n\n[peripherals.uart5]\ntx = \"PC12\"\nrx = \"PD2\"\ndma = [\"rx\"]\n";
+        let diags = diagnostics(text);
+        assert_eq!(diags.len(), 1, "got {diags:?}");
+        assert!(diags[0].message.contains("DMA collision"));
+        let src_line = text
+            .lines()
+            .nth(diags[0].range.start.line as usize)
+            .unwrap();
+        assert!(
+            src_line.contains("[peripherals.i2c1]"),
+            "underlined: {src_line}"
+        );
+    }
+
+    #[test]
+    fn unhandled_irq_underlines_peripheral_table() {
+        // TIM9 has no modeled NVIC vector on the F446 — `irq = true` on it is
+        // an unhandled-IRQ conflict, fatal (ERROR). All TIM roles are
+        // optional, so an otherwise-empty table produces no pin conflicts.
+        let text = "[device]\nfamily = \"STM32F446RE\"\n\n[peripherals.tim9]\nirq = true\n";
+        let diags = diagnostics(text);
+        assert_eq!(diags.len(), 1, "got {diags:?}");
+        assert_eq!(diags[0].severity, Some(DiagnosticSeverity::ERROR));
+        assert!(diags[0].message.contains("IRQ conflict"), "{:?}", diags[0]);
+        let src_line = text
+            .lines()
+            .nth(diags[0].range.start.line as usize)
+            .unwrap();
+        assert!(
+            src_line.contains("[peripherals.tim9]"),
+            "underlined: {src_line}"
+        );
+    }
+
+    #[test]
+    fn exti_collision_underlines_first_pin() {
+        // PA0 and PB0 both claim EXTI line 0.
+        let text =
+            "[device]\nfamily = \"STM32F446RE\"\n\n[[exti]]\npin = \"PA0\"\n\n[[exti]]\npin = \"PB0\"\n";
+        let diags = diagnostics(text);
+        assert_eq!(diags.len(), 1, "got {diags:?}");
+        assert_eq!(diags[0].severity, Some(DiagnosticSeverity::ERROR));
+        assert!(diags[0].message.contains("IRQ conflict"), "{:?}", diags[0]);
+        let src_line = text
+            .lines()
+            .nth(diags[0].range.start.line as usize)
+            .unwrap();
+        assert!(src_line.contains("PA0"), "underlined: {src_line}");
+    }
+
+    #[test]
+    fn priority_inversion_is_a_warning() {
+        let text = "[device]\nfamily = \"STM32F446RE\"\n\n[peripherals.usart2]\ntx = \"PA2\"\nrx = \"PA3\"\ndma = true\ndma_priority = 5\nirq_priority = 1\n";
+        let diags = diagnostics(text);
+        assert_eq!(diags.len(), 1, "got {diags:?}");
+        assert_eq!(diags[0].severity, Some(DiagnosticSeverity::WARNING));
+        assert!(diags[0].message.contains("IRQ conflict"), "{:?}", diags[0]);
+        let src_line = text
+            .lines()
+            .nth(diags[0].range.start.line as usize)
+            .unwrap();
+        assert!(
+            src_line.contains("[peripherals.usart2]"),
+            "underlined: {src_line}"
+        );
+    }
+
+    #[test]
+    fn baud_constraint_underlines_uart_table() {
+        let text =
+            "[device]\nfamily = \"STM32F446RE\"\n\n[clocks]\nsource = \"hsi\"\n\n[peripherals.usart2]\ntx = \"PA2\"\nrx = \"PA3\"\nbaud = 20000000\n";
+        let diags = diagnostics(text);
+        assert_eq!(diags.len(), 1, "got {diags:?}");
+        assert!(diags[0].message.contains("clock constraint"));
+        let src_line = text
+            .lines()
+            .nth(diags[0].range.start.line as usize)
+            .unwrap();
+        assert!(
+            src_line.contains("[peripherals.usart2]"),
+            "underlined: {src_line}"
+        );
+    }
+
+    #[test]
+    fn unroutable_underlines_peripheral_table() {
+        // Construct a conflict directly: an Unroutable conflict with a peripheral node.
+        // The diagnostic should underline the matching peripheral's table header.
+        let text = "[device]\nfamily = \"STM32F446RE\"\n\n[peripherals.spi1]\nmosi = \"PA7\"\nmiso = \"PA6\"\nsck = \"PA5\"\n";
+        let conflict = Conflict::Unroutable {
+            node: "SPI1".to_string(),
+            reason: "No valid pin assignment found for SPI1_MOSI given current constraints"
+                .to_string(),
+        };
+        let name_to_key: HashMap<String, String> = vec![("SPI1".to_string(), "spi1".to_string())]
+            .into_iter()
+            .collect();
+        let spans = conflict_spans(text, &conflict, &name_to_key);
+        assert_eq!(spans.len(), 1);
+        let span = &spans[0];
+        let underlined_text = &text[span.clone()];
+        assert!(
+            underlined_text.contains("[peripherals.spi1]"),
+            "expected to underline peripheral header, got: {underlined_text}"
+        );
+    }
+
+    #[test]
+    fn unroutable_with_composite_node_falls_back_gracefully() {
+        // When a node is a composite like "SPI1_MOSI" (which won't match any DB name),
+        // the lookup should fail gracefully and fall back to the whole-first-line default.
+        let text = "[device]\nfamily = \"STM32F446RE\"\n\n[peripherals.spi1]\nmosi = \"PA7\"\n";
+        let conflict = Conflict::Unroutable {
+            node: "SPI1_MOSI".to_string(),
+            reason: "No valid pin assignment for SPI1_MOSI".to_string(),
+        };
+        let name_to_key: HashMap<String, String> = vec![("SPI1".to_string(), "spi1".to_string())]
+            .into_iter()
+            .collect();
+        let spans = conflict_spans(text, &conflict, &name_to_key);
+        assert_eq!(spans.len(), 1);
+        // With no header match and no pin match, should fall back to whole_first_line.
+        let span = &spans[0];
+        let underlined_text = &text[span.clone()];
+        assert_eq!(
+            underlined_text, "[device]",
+            "expected fallback to first line, got: {underlined_text}"
+        );
+    }
+
+    #[test]
     fn missing_pin_points_at_the_table_header() {
         let text = "[peripherals.spi1]\nmiso = \"PA6\"\nsck = \"PA5\"\n";
         let diags = diagnostics(text);
@@ -452,5 +742,56 @@ mod tests {
     fn no_completion_outside_a_peripheral_table() {
         let text = "[device]\nfamily = \"\"\n";
         assert!(completion(text, pos(1, 10)).is_empty());
+    }
+
+    #[test]
+    fn invalid_test_underlines_the_quoted_name() {
+        let text = "[device]\nfamily = \"STM32F446RE\"\n\n[peripherals.usart2]\ntx = \"PA2\"\nrx = \"PA3\"\n\n[[test]]\nname = \"bogus_test\"\nassertion = \"this is not a valid assertion\"\n";
+        let diags = diagnostics(text);
+        assert_eq!(diags.len(), 1, "got {diags:?}");
+        let src_line = text
+            .lines()
+            .nth(diags[0].range.start.line as usize)
+            .unwrap();
+        assert!(src_line.contains("bogus_test"), "underlined: {src_line}");
+    }
+
+    #[test]
+    fn hover_on_assertion_value_shows_grammar() {
+        let text = "[[test]]\nname = \"t1\"\nassertion = \"pin PA5 toggles at 1Hz \u{00b1}5%\"\n";
+        let h = hover(text, pos(2, 15)).expect("expected hover on assertion value");
+        let HoverContents::Markup(m) = h.contents else {
+            panic!("expected markup hover");
+        };
+        assert!(m.value.contains("pin <PIN> toggles at <N>Hz"));
+        assert!(m.value.contains("pin <PIN> is <high|low> within <N>ms"));
+        assert!(m.value.contains("echoes \"<text>\" within <N>ms"));
+        assert!(m.value.contains("trace event \"<pattern>\" within <N>ms"));
+    }
+
+    #[test]
+    fn hover_off_assertion_and_pin_is_none() {
+        // Cursor on the `name` key's value, not an assertion or a pin.
+        let text = "[[test]]\nname = \"t1\"\nassertion = \"pin PA5 toggles at 1Hz \u{00b1}5%\"\n";
+        assert!(hover(text, pos(1, 8)).is_none());
+    }
+
+    #[test]
+    fn completion_offers_backend_values_inside_a_test_block() {
+        let text = "[[test]]\nname = \"t1\"\nassertion = \"pin PA5 is high within 10ms\"\nbackend = \"\"\n";
+        let items = completion(text, pos(3, 11));
+        assert_eq!(items.len(), 3, "got {items:?}");
+        let labels: Vec<_> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"qemu"));
+        assert!(labels.contains(&"hardware"));
+        assert!(labels.contains(&"both"));
+    }
+
+    #[test]
+    fn backend_completion_does_not_affect_peripheral_completion() {
+        let text = "[peripherals.spi1]\nmosi = \"\"\n";
+        let items = completion(text, pos(1, 8));
+        assert!(!items.is_empty());
+        assert!(items.iter().any(|i| i.label == "PA7"));
     }
 }

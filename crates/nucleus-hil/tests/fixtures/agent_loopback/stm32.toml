@@ -1,0 +1,12 @@
+[device]
+family = "STM32F411RE"
+
+[peripherals.usart2]
+tx = "PA2"
+rx = "PA3"
+
+[[test]]
+name = "uart_loopback"
+type = "scripted"
+script = "uart_loopback"
+backend = "both"

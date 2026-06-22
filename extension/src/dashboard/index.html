@@ -3,12 +3,12 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Nucleus Trace</title>
+    <title>Nucleus</title>
     <link rel="stylesheet" href="dashboard.css" />
   </head>
   <body>
-    <!-- Standalone host. In the VS Code webview the same bundle is loaded with
-         CSP-safe URIs; both connect to ws://localhost:7878 by default. -->
+    <!-- Standalone fallback. The real host is the VS Code sidebar webview, which
+         loads the same bundle with CSP-safe URIs and feeds it history. -->
     <div id="root"></div>
     <script src="dashboard.js"></script>
   </body>
