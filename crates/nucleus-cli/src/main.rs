@@ -7,6 +7,7 @@
 //! `trace` decodes ITM/SWO and streams events over a WebSocket.
 
 mod firmware;
+mod ledger;
 mod scaffold;
 
 use std::path::{Path, PathBuf};
@@ -103,6 +104,24 @@ enum Command {
         #[arg(long)]
         test: Option<String>,
     },
+    /// List recorded project versions (newest last) with per-backend test
+    /// results from the `.nucleus/` ledger.
+    History {
+        /// Project root containing the `.nucleus/` ledger (defaults to current
+        /// directory).
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
+    /// Show full details for one recorded version: verdict, solved config, and
+    /// every per-backend test result.
+    Show {
+        /// Version id (full or short hash prefix, e.g. `abc1234`).
+        hash: String,
+        /// Project root containing the `.nucleus/` ledger (defaults to current
+        /// directory).
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
 }
 
 /// clap-friendly mirror of [`nucleus_compiler::BackendSelect`] for the
@@ -134,6 +153,8 @@ fn main() -> ExitCode {
             backend,
             test,
         } => run_test(&path, backend, test.as_deref()),
+        Command::History { path } => run_history(&path),
+        Command::Show { hash, path } => run_show(&path, &hash),
     }
 }
 
@@ -372,6 +393,15 @@ fn run_route(path: &Path, out: Option<&Path>) -> ExitCode {
     }
 }
 
+/// Stable lowercase ledger label for a backend kind: `"qemu"` / `"hardware"`.
+fn backend_label(kind: nucleus_hil::backend::BackendKind) -> &'static str {
+    use nucleus_hil::backend::BackendKind;
+    match kind {
+        BackendKind::Qemu => "qemu",
+        BackendKind::Hardware => "hardware",
+    }
+}
+
 /// Backend labels a scripted test should actually run on: the intersection
 /// of what `--backend filter` allows and what the test's declared `select`
 /// permits. `filter = None` allows both; `select = Both` declares both.
@@ -463,6 +493,12 @@ fn run_test(
 
     let mut any_failed = false;
 
+    // Find or create the ledger version for the built firmware; test outcomes
+    // get attached to it. `None` when there's no built firmware to hash (e.g. a
+    // scripted-only run) — the tests still run, they just aren't logged.
+    let version_hash = ledger::record_version(path);
+    let mut records: Vec<nucleus_ledger::TestRecord> = Vec::new();
+
     if !declarative.is_empty() {
         let elf = path.join("build/firmware");
         let bin = path.join("build/firmware.bin");
@@ -507,15 +543,21 @@ fn run_test(
                     let outcomes = run_tests(backend.as_mut(), &declarative);
                     let _ = backend.finish();
                     for outcome in &outcomes {
-                        let status_icon = match outcome.status {
-                            TestStatus::Passed => "PASS",
-                            TestStatus::Failed => "FAIL",
-                            TestStatus::Skipped => "SKIP",
+                        let (status_icon, ledger_status) = match outcome.status {
+                            TestStatus::Passed => ("PASS", "pass"),
+                            TestStatus::Failed => ("FAIL", "fail"),
+                            TestStatus::Skipped => ("SKIP", "skip"),
                         };
                         println!(
                             "  {status_icon} {} [{kind:?}]: {}",
                             outcome.name, outcome.detail
                         );
+                        records.push(nucleus_ledger::TestRecord {
+                            name: outcome.name.clone(),
+                            backend: backend_label(kind).to_string(),
+                            status: ledger_status.to_string(),
+                            detail: outcome.detail.clone(),
+                        });
                         if outcome.status == TestStatus::Failed {
                             any_failed = true;
                         }
@@ -549,20 +591,34 @@ fn run_test(
                 .current_dir(path)
                 .env("NUCLEUS_TEST_BACKEND", label)
                 .status();
-            match status {
+            let (passed, detail) = match status {
                 Ok(s) if s.success() => {
                     println!("  PASS {} [{label}] (scripted)", test.name);
+                    (true, format!("scripted: {script}"))
                 }
                 Ok(_) => {
                     println!("  FAIL {} [{label}] (scripted)", test.name);
                     any_failed = true;
+                    (false, format!("scripted: {script}"))
                 }
                 Err(e) => {
                     eprintln!("  error: cargo test failed to launch: {e}");
                     any_failed = true;
+                    (false, format!("cargo test failed to launch: {e}"))
                 }
-            }
+            };
+            records.push(nucleus_ledger::TestRecord {
+                name: test.name.clone(),
+                backend: label.to_string(),
+                status: if passed { "pass" } else { "fail" }.to_string(),
+                detail,
+            });
         }
+    }
+
+    // Persist all collected outcomes onto the ledger version, if we have one.
+    if let Some(hash) = &version_hash {
+        ledger::attach_tests(path, hash, records);
     }
 
     if any_failed {
@@ -570,6 +626,133 @@ fn run_test(
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// `nucleus history`: list every recorded version with its verdict and a
+/// per-backend pass/total test summary. Exit `0` always (read-only report);
+/// an unreadable ledger is the only failure.
+fn run_history(path: &Path) -> ExitCode {
+    use nucleus_ledger::{Ledger, Verdict};
+
+    let ledger = match Ledger::load(path) {
+        Ok(l) => l,
+        Err(err) => {
+            eprintln!("error: cannot read ledger: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if ledger.versions.is_empty() {
+        println!("no versions recorded yet — run `nucleus build` then `nucleus test`.");
+        return ExitCode::SUCCESS;
+    }
+
+    for version in &ledger.versions {
+        let verdict = match &version.verdict {
+            Verdict::Approved => "approved".to_string(),
+            Verdict::Conflicts(c) => format!("{} conflict(s)", c.len()),
+        };
+        let summary = Ledger::test_summary(version);
+        let tests = if summary.is_empty() {
+            "no tests".to_string()
+        } else {
+            summary
+                .iter()
+                .map(|(backend, (pass, total))| format!("{backend} {pass}/{total}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        println!(
+            "{}  {}  {:<14}  {}",
+            version.short(),
+            fmt_timestamp(version.timestamp),
+            verdict,
+            tests
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+/// `nucleus show <hash>`: full detail for one version. Exit `1` if the hash
+/// can't be resolved to exactly one version.
+fn run_show(path: &Path, query: &str) -> ExitCode {
+    use nucleus_ledger::{Ledger, Verdict};
+
+    let ledger = match Ledger::load(path) {
+        Ok(l) => l,
+        Err(err) => {
+            eprintln!("error: cannot read ledger: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let version = match ledger.find(query) {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!("error: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    println!("version  {}", version.hash);
+    println!("short    {}", version.short());
+    println!("recorded {}", fmt_timestamp(version.timestamp));
+    println!("family   {}", version.family);
+    println!("toolchain {}", version.toolchain);
+    match &version.verdict {
+        Verdict::Approved => println!("verdict  approved (no conflicts)"),
+        Verdict::Conflicts(conflicts) => {
+            println!("verdict  {} conflict(s):", conflicts.len());
+            for c in conflicts {
+                println!("    - {c}");
+            }
+        }
+    }
+    println!(
+        "solved   {}",
+        if version.solved_config.is_some() {
+            "auto-routed (see artifacts)"
+        } else {
+            "config used as written"
+        }
+    );
+
+    if version.tests.is_empty() {
+        println!("tests    none recorded");
+    } else {
+        println!("tests:");
+        for t in &version.tests {
+            let icon = match t.status.as_str() {
+                "pass" => "PASS",
+                "fail" => "FAIL",
+                _ => "SKIP",
+            };
+            println!("    {icon} {} [{}]: {}", t.name, t.backend, t.detail);
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// Format unix-epoch seconds as `YYYY-MM-DD HH:MM:SSZ` (UTC), without pulling in
+/// a date crate. Uses Howard Hinnant's days-from-civil inverse.
+fn fmt_timestamp(secs: u64) -> String {
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let (hh, mm, ss) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+
+    // days since 1970-01-01 -> civil (y, m, d)
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let y = if m <= 2 { y + 1 } else { y };
+
+    format!("{y:04}-{m:02}-{d:02} {hh:02}:{mm:02}:{ss:02}Z")
 }
 
 #[cfg(test)]
@@ -609,5 +792,14 @@ mod scripted_backend_tests {
             scripted_backend_labels(None, BackendSelect::Hardware),
             vec!["hardware"]
         );
+    }
+
+    #[test]
+    fn fmt_timestamp_known_epochs() {
+        assert_eq!(super::fmt_timestamp(0), "1970-01-01 00:00:00Z");
+        // 2025-01-01 00:00:00 UTC
+        assert_eq!(super::fmt_timestamp(1_735_689_600), "2025-01-01 00:00:00Z");
+        // 2026-06-22 13:45:09 UTC
+        assert_eq!(super::fmt_timestamp(1_782_135_909), "2026-06-22 13:45:09Z");
     }
 }

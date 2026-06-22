@@ -128,8 +128,12 @@ The backbone everything else builds on. Acts as `cargo` does for Rust projects.
 |---|---|
 | `nucleus init` | Scaffold a new STM32 project: `stm32.toml`, `CMakeLists.txt`, `src/main.c`, `.github/workflows/ci.yml`. Use `--board` to choose the target (`NUCLEO-F446RE` default, or `NUCLEO-F411RE`) |
 | `nucleus check` | Validate `stm32.toml` against the constraint database, print conflicts |
+| `nucleus route` | Auto-assign pins for peripherals declared without them (M4 auto-router), write a fully-specified `stm32.toml` |
 | `nucleus build` | Run CMake + arm-none-eabi-gcc, emit firmware `.elf` and `.bin` |
 | `nucleus flash` | Invoke `st-flash` or OpenOCD to program the Nucleo board |
+| `nucleus test` | Run `[[test]]` assertions on the QEMU twin and/or real hardware (M5–M7) |
+| `nucleus history` | List recorded project versions with per-backend test results, from the `.nucleus/` ledger (M8) |
+| `nucleus show <hash>` | Show full detail for one version: verdict, solved config, every test result (M8) |
 | `nucleus trace` | Start the ITM daemon + open the dashboard in VS Code or browser |
 | `nucleus lsp` | Start the language server (called by the VS Code extension, not by humans) |
 
