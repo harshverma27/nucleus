@@ -234,7 +234,9 @@ mod tests {
         });
 
         let mut stub = GdbStub::connect(&addr.to_string()).await.unwrap();
-        stub.write_memory(0x2000_0000, &[0x67, 0x41, 0x54, 0x4e]).await.unwrap();
+        stub.write_memory(0x2000_0000, &[0x67, 0x41, 0x54, 0x4e])
+            .await
+            .unwrap();
         server.await.unwrap();
     }
 
@@ -249,11 +251,16 @@ mod tests {
             sock.write_all(b"+").await.unwrap();
             let framed = "$E01#"; // body "E01"
             let sum = "E01".bytes().fold(0u8, |a, b| a.wrapping_add(b));
-            sock.write_all(format!("{framed}{sum:02x}").as_bytes()).await.unwrap();
+            sock.write_all(format!("{framed}{sum:02x}").as_bytes())
+                .await
+                .unwrap();
             sock.flush().await.unwrap();
         });
         let mut stub = GdbStub::connect(&addr.to_string()).await.unwrap();
-        let err = stub.write_memory(0x2000_0000, &[1, 2, 3, 4]).await.unwrap_err();
+        let err = stub
+            .write_memory(0x2000_0000, &[1, 2, 3, 4])
+            .await
+            .unwrap_err();
         assert!(matches!(err, HilError::Protocol(_)));
     }
 }

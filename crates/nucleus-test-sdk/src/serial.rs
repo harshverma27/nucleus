@@ -27,8 +27,14 @@ impl Serial {
 
     pub fn write_byte(&mut self, b: u8) -> std::io::Result<()> {
         match self {
-            Serial::Tcp(s) => { s.write_all(&[b])?; s.flush() }
-            Serial::Port(p) => { p.write_all(&[b])?; p.flush() }
+            Serial::Tcp(s) => {
+                s.write_all(&[b])?;
+                s.flush()
+            }
+            Serial::Port(p) => {
+                p.write_all(&[b])?;
+                p.flush()
+            }
         }
     }
 
@@ -42,8 +48,12 @@ impl Serial {
                 match s.read(&mut buf) {
                     Ok(0) => Ok(None),
                     Ok(_) => Ok(Some(buf[0])),
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
-                        || e.kind() == std::io::ErrorKind::TimedOut => Ok(None),
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            || e.kind() == std::io::ErrorKind::TimedOut =>
+                    {
+                        Ok(None)
+                    }
                     Err(e) => Err(e),
                 }
             }
@@ -88,7 +98,10 @@ mod tests {
     fn read_byte_times_out_to_none() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        let _server = std::thread::spawn(move || { let _ = listener.accept(); std::thread::sleep(Duration::from_millis(200)); });
+        let _server = std::thread::spawn(move || {
+            let _ = listener.accept();
+            std::thread::sleep(Duration::from_millis(200));
+        });
         let mut s = Serial::open_tcp(&addr.to_string()).unwrap();
         assert_eq!(s.read_byte(Duration::from_millis(50)).unwrap(), None);
     }

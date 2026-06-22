@@ -95,7 +95,9 @@ fn assert_loopback(client: &mut AgentClient<'_>, serial: &mut Serial) {
         Some(0x5A),
         "TX byte should appear on the serial channel"
     );
-    eprintln!("uart_loopback TX round trip: {tx_elapsed:?} (correctness gate, not a latency assert)");
+    eprintln!(
+        "uart_loopback TX round trip: {tx_elapsed:?} (correctness gate, not a latency assert)"
+    );
 
     // RX path: host -> serial -> device USART2 RX -> mailbox UART_RX_POLL.
     serial.write_byte(0x3C).expect("serial write for rx path");
@@ -114,7 +116,9 @@ fn assert_loopback(client: &mut AgentClient<'_>, serial: &mut Serial) {
         Some(0x3C),
         "RX byte written on the serial channel should reach the agent"
     );
-    eprintln!("uart_loopback RX round trip: {rx_elapsed:?} (correctness gate, not a latency assert)");
+    eprintln!(
+        "uart_loopback RX round trip: {rx_elapsed:?} (correctness gate, not a latency assert)"
+    );
 }
 
 /// GPIO over the mailbox: set PA5 high/low and read it back. Hardware-only —
@@ -160,8 +164,8 @@ fn run_qemu() {
     let port = backend
         .serial_port()
         .expect("qemu backend exposes a USART TCP port after start");
-    let mut serial = Serial::open_tcp(&format!("127.0.0.1:{port}"))
-        .expect("connect to qemu USART2 socket");
+    let mut serial =
+        Serial::open_tcp(&format!("127.0.0.1:{port}")).expect("connect to qemu USART2 socket");
 
     {
         let mut client = AgentClient::new(&mut backend);
@@ -220,8 +224,8 @@ fn run_hardware() {
     // On hardware the UART is the ST-Link Virtual COM Port, a fixed device
     // path (the HardwareBackend has no serial_port() accessor). Open it before
     // the AgentClient's &mut borrow, same as the QEMU leg.
-    let mut serial = Serial::open_device("/dev/ttyACM0", 115200)
-        .expect("open ST-Link VCP /dev/ttyACM0");
+    let mut serial =
+        Serial::open_device("/dev/ttyACM0", 115200).expect("open ST-Link VCP /dev/ttyACM0");
 
     {
         let mut client = AgentClient::new(&mut backend);

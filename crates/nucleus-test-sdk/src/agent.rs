@@ -93,7 +93,8 @@ impl<'a> AgentClient<'a> {
         let seq = self.backend.read_mem32(self.base + OFF_SEQ)?;
         self.backend
             .write_mem32(self.base + OFF_SEQ, seq.wrapping_add(1))?;
-        self.backend.write_mem32(self.base + OFF_STATUS, STATUS_BUSY)?;
+        self.backend
+            .write_mem32(self.base + OFF_STATUS, STATUS_BUSY)?;
 
         let deadline = Instant::now() + self.poll_timeout;
         loop {
