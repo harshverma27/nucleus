@@ -104,6 +104,19 @@ enum Command {
         #[arg(long)]
         test: Option<String>,
     },
+    /// Run firmware on both HIL backends, collect ITM-event checkpoints from
+    /// each, and report the first point where they disagree (the M10
+    /// lockstep comparator). Exits non-zero only when a divergence is found.
+    Lockstep {
+        /// Project root containing stm32.toml and build/firmware.{elf,bin}
+        /// (defaults to the current directory).
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Print a note that explanation isn't implemented yet (see v3)
+        /// instead of silently ignoring the flag.
+        #[arg(long)]
+        explain: bool,
+    },
     /// List recorded test runs (oldest first) with per-run pass/fail counts,
     /// from `tests/test_history.json`.
     History {
@@ -161,6 +174,7 @@ fn main() -> ExitCode {
             backend,
             test,
         } => run_test(&path, backend, test.as_deref()),
+        Command::Lockstep { path, explain } => run_lockstep(&path, explain),
         Command::History { path, graph, last } => run_history(&path, graph, last),
         Command::Show { run, path } => run_show(&path, run),
     }
@@ -629,6 +643,128 @@ fn run_test(
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+/// `nucleus lockstep`: run firmware on both HIL backends, collect
+/// ITM-event checkpoints from each (M10), and report the first divergence.
+/// Exit code: `1` on a parse/conflict error, missing firmware artifacts, a
+/// genuine backend start failure, or a found divergence; `0` on agreement
+/// or when only one leg could run (nothing to compare).
+fn run_lockstep(path: &Path, explain: bool) -> ExitCode {
+    use nucleus_hil::backend::HilError;
+    use nucleus_hil::lockstep::{self, DivergenceReport};
+    use nucleus_hil::qemu::QemuBackend;
+    use nucleus_hil::hardware::HardwareBackend;
+    use nucleus_trace::translate::VariableMap;
+
+    let toml_path = path.join("stm32.toml");
+    let text = match std::fs::read_to_string(&toml_path) {
+        Ok(text) => text,
+        Err(err) => {
+            eprintln!("error: cannot read {}: {err}", toml_path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let check_report = match nucleus_compiler::check(&text) {
+        Ok(report) => report,
+        Err(err) => {
+            print_parse_error(&toml_path, &err);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if !check_report.is_ok() {
+        let n = check_report.conflicts.len();
+        eprintln!(
+            "{}: {n} conflict{} found:\n",
+            toml_path.display(),
+            if n == 1 { "" } else { "s" }
+        );
+        for conflict in &check_report.conflicts {
+            let prefix = match conflict.severity() {
+                Severity::Error => "error",
+                Severity::Warning => "warning",
+            };
+            eprintln!("  {prefix}: {conflict}");
+        }
+        eprintln!();
+        return ExitCode::FAILURE;
+    }
+
+    let elf = path.join("build/firmware");
+    let bin = path.join("build/firmware.bin");
+    if !elf.exists() || !bin.exists() {
+        eprintln!(
+            "error: {} not found. Run `nucleus build` first.",
+            bin.display()
+        );
+        return ExitCode::FAILURE;
+    }
+    let firmware = FirmwareArtifact { elf, bin };
+    let vars = VariableMap::from_config(&check_report.config.trace);
+
+    let per_event = std::time::Duration::from_secs(3);
+    let total = std::time::Duration::from_secs(5);
+
+    let mut backends: Vec<Box<dyn Backend>> = vec![
+        Box::new(QemuBackend::default()),
+        Box::new(HardwareBackend::default()),
+    ];
+
+    let mut traces = Vec::new();
+    for backend in backends.iter_mut() {
+        let kind = backend.name();
+        match backend.start(&firmware, &check_report) {
+            Err(err @ HilError::ToolMissing(_)) => {
+                println!("skipped: {kind:?} ({err})");
+            }
+            Err(err) => {
+                eprintln!("error: {kind:?} failed to start: {err}");
+                return ExitCode::FAILURE;
+            }
+            Ok(()) => {
+                let trace = lockstep::collect(backend.as_mut(), &vars, per_event, total);
+                let _ = backend.finish();
+                traces.push((kind, trace));
+            }
+        }
+    }
+
+    if traces.len() < 2 {
+        match traces.first() {
+            Some((kind, _)) => println!("one leg only ({kind:?}) — no comparison possible"),
+            None => println!("no leg available — no comparison possible"),
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    let (sim_kind, sim_trace) = &traces[0];
+    let (silicon_kind, silicon_trace) = &traces[1];
+    let report = lockstep::compare(sim_trace, silicon_trace);
+
+    match report {
+        DivergenceReport::Agreement { checkpoints_compared } => {
+            println!(
+                "agreement across {checkpoints_compared} checkpoint(s) ({sim_kind:?} vs {silicon_kind:?})"
+            );
+            ExitCode::SUCCESS
+        }
+        DivergenceReport::Diverged {
+            first_checkpoint,
+            observable,
+            sim_value,
+            silicon_value,
+        } => {
+            println!(
+                "diverged at checkpoint {first_checkpoint}: {observable} {sim_kind:?}={sim_value} {silicon_kind:?}={silicon_value}"
+            );
+            if explain {
+                println!("--explain: not implemented in this release — see v3");
+            }
+            ExitCode::FAILURE
+        }
     }
 }
 

@@ -662,6 +662,7 @@ dependencies = [
  "nucleus-itm",
  "nucleus-test-sdk",
  "nucleus-trace",
+ "serde_json",
  "tokio",
 ]
 

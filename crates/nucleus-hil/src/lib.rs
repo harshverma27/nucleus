@@ -13,6 +13,7 @@ pub mod backend;
 pub mod gdbstub;
 pub mod gpio_map;
 pub mod hardware;
+pub mod lockstep;
 pub mod preflight;
 pub mod qemu;
 
@@ -34,6 +35,7 @@ pub use backend::{
     Backend, BackendKind, FirmwareArtifact, HilError, ItmEvent, RunResult, RunStatus, RunTiming,
     Sample, SampleTarget,
 };
+pub use lockstep::{Checkpoint, DivergenceReport, ObservationTrace};
 
 /// Runs `firmware` on both backends and always returns one [`RunResult`] per
 /// backend — missing tools/hardware degrade to `RunStatus::Skipped` inside

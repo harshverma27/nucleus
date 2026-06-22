@@ -31,13 +31,24 @@ Two phases, collect then compare:
 
 ### Collect
 
+**Correction (made during implementation planning):** `[trace.variables]`
+entries (`nucleus_compiler::config::TraceVariable { name, port, ty }`)
+carry no memory address — the firmware writes the variable's value
+directly onto an ITM stimulus port, there is no SWD register read
+involved. So a checkpoint's "snapshot" isn't a `Backend::register()` /
+`Backend::read_mem32()` call; the value already arrives inside the ITM
+event itself.
+
 For each backend, drive the same event loop used by `assert::run`'s ITM
 path: call `Backend::await_itm_event(timeout)` in a loop until it returns
 `None` (timeout, no more events) or a run-level timeout elapses. On every
-`Some(event)`, snapshot each variable named in `[trace.variables]` via
-`Backend::register()` / `Backend::read_mem32()` (same lookup the trace
-crate already does to resolve a variable name to an address). Append one
-`Checkpoint` per ITM event observed.
+`Some(event)`, decode it via `nucleus_trace::translate::{Translator,
+VariableMap}` — the same machinery the trace daemon uses — by replaying it
+as a `nucleus_itm::Packet::Instrumentation { port, data }` (the same shape
+`ItmEvent` already carries). A configured port decodes to one
+`TraceEvent::Variable { name, value, .. }`; port 0 (the log stream) and any
+unconfigured port decode to nothing, and the checkpoint still compares on
+its raw event. Append one `Checkpoint` per ITM event observed.
 
 Output: one `ObservationTrace` per backend, collected independently (each
 backend runs to completion/timeout on its own — this is not real-time
@@ -67,7 +78,7 @@ In `nucleus-hil::lockstep`:
 ```rust
 pub struct Checkpoint {
     pub itm_event: ItmEvent,
-    pub snapshots: Vec<(String, u32)>, // (variable name, register value)
+    pub decoded: Option<(String, serde_json::Value)>, // (variable name, decoded value), if this port is configured
 }
 
 pub struct ObservationTrace {

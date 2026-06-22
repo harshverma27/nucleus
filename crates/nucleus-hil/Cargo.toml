@@ -16,6 +16,7 @@ nucleus-trace = { path = "../nucleus-trace", version = "0.1.0" }
 nucleus-compiler = { path = "../nucleus-compiler", version = "0.1.0" }
 nucleus-db = { path = "../nucleus-db", version = "0.1.0" }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time", "process"] }
+serde_json = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time", "process"] }
