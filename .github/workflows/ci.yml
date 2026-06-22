@@ -29,6 +29,9 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Install QEMU (for nucleus-hil's QEMU-backed HIL tests)
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-arm
+
       - name: Formatting
         run: cargo fmt --all -- --check
 

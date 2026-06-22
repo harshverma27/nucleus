@@ -26,6 +26,10 @@
       {
         "command": "nucleus.openDashboard",
         "title": "Nucleus: Open Trace Dashboard"
+      },
+      {
+        "command": "nucleus.openHistory",
+        "title": "Nucleus: Open History (version trend)"
       }
     ],
     "configuration": {

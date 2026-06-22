@@ -1,0 +1,25 @@
+[package]
+name = "nucleus-hil"
+description = "Nucleus dual-backend HIL substrate: QEMU and real-hardware test runners behind one observation API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords = ["stm32", "hil", "qemu", "swd", "itm"]
+categories = ["embedded", "development-tools::testing"]
+
+[dependencies]
+nucleus-itm = { path = "../nucleus-itm", version = "0.1.0" }
+nucleus-trace = { path = "../nucleus-trace", version = "0.1.0" }
+nucleus-compiler = { path = "../nucleus-compiler", version = "0.1.0" }
+nucleus-db = { path = "../nucleus-db", version = "0.1.0" }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time", "process"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time", "process"] }
+nucleus-test-sdk = { path = "../nucleus-test-sdk", version = "0.1.0" }
+
+[lints]
+workspace = true

@@ -10,7 +10,10 @@
 use std::fmt;
 use std::str::FromStr;
 
+pub mod clock;
 mod data;
+pub mod dma;
+pub mod irq;
 pub mod pack;
 
 /// A GPIO port on the device.
@@ -178,6 +181,26 @@ impl Database {
             .iter()
             .find(|m| m.pin == pin && m.peripheral == peripheral && m.signal == signal)
             .map(|m| m.af)
+    }
+
+    /// Enumerate the candidate pins that carry `peripheral`'s `signal`,
+    /// in deterministic order.
+    ///
+    /// Every physical pin that has at least one AF mapping to the given
+    /// `(peripheral, signal)` pair is returned, sorted and deduplicated.
+    /// Returns an empty vector if the family does not model the signal
+    /// (the auto-router then skips it rather than guessing — never a false error,
+    /// matching the `peripheral_bus` discipline).
+    pub fn candidate_pins(&self, peripheral: &str, signal: &str) -> Vec<Pin> {
+        let mut pins: Vec<Pin> = self
+            .entries
+            .iter()
+            .filter(|m| m.peripheral == peripheral && m.signal == signal)
+            .map(|m| m.pin)
+            .collect();
+        pins.sort_unstable();
+        pins.dedup();
+        pins
     }
 }
 

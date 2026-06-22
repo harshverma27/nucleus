@@ -21,6 +21,14 @@ fn run_check(name: &str) -> std::process::Output {
         .expect("failed to run nucleus binary")
 }
 
+fn run_route(name: &str) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_nucleus"))
+        .arg("route")
+        .arg(fixture(name))
+        .output()
+        .expect("failed to run nucleus binary")
+}
+
 #[test]
 fn clean_config_exits_zero() {
     let out = run_check("clean.toml");
@@ -45,6 +53,140 @@ fn pa5_collision_exits_nonzero_with_exactly_one_error() {
     assert!(
         stderr.contains("PA5") && stderr.contains("pin collision"),
         "error should name the colliding pin, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn overclocked_apb1_exits_nonzero_with_clock_constraint() {
+    // M1 exit criterion at the CLI boundary: a clock misconfiguration CubeMX
+    // accepts is caught, with exactly one error and no spurious conflicts.
+    let out = run_check("overclock_apb1.toml");
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit on over-clock"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let error_lines = stderr.lines().filter(|l| l.contains("error:")).count();
+    assert_eq!(
+        error_lines, 1,
+        "expected exactly one error, got stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("APB1") && stderr.contains("clock constraint") && stderr.contains("45 MHz"),
+        "error should name the over-clocked bus, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn dma_collision_exits_nonzero_with_suggestion() {
+    // M2 exit criterion at the CLI boundary: two peripherals contending one DMA
+    // stream → exactly one error naming both, with a proposed free alternative.
+    let out = run_check("dma_collision.toml");
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit on DMA collision"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let error_lines = stderr.lines().filter(|l| l.contains("error:")).count();
+    assert_eq!(
+        error_lines, 1,
+        "expected exactly one error, got stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("DMA collision")
+            && stderr.contains("I2C1")
+            && stderr.contains("UART5")
+            && stderr.contains("move I2C1"),
+        "error should name both peripherals and a suggestion, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn exti_collision_exits_nonzero() {
+    // M3 exit criterion at the CLI boundary: two [[exti]] entries (PA0, PB0)
+    // both claim EXTI line 0 -> exactly one error naming both pins.
+    let out = run_check("exti_collision.toml");
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit on EXTI collision"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let error_lines = stderr.lines().filter(|l| l.contains("error:")).count();
+    assert_eq!(
+        error_lines, 1,
+        "expected exactly one error, got stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("PA0") && stderr.contains("PB0"),
+        "error should name both colliding pins, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn irq_unhandled_exits_nonzero() {
+    // M3 exit criterion at the CLI boundary: USART3 doesn't exist on the
+    // F411 at all, so this legitimately produces two independent conflicts
+    // (PeripheralUnavailable from the pin/AF pass, IrqConflict from
+    // irq::validate()'s own pass over `irq = true`). Unlike the
+    // single-conflict fixtures above, we don't assert an exact error count
+    // here — just that the IRQ-specific conflict fired and named USART3.
+    let out = run_check("irq_unhandled.toml");
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit on unhandled IRQ"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("IRQ conflict") && stderr.contains("USART3"),
+        "error should name an IRQ conflict on USART3, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn priority_inversion_exits_zero_with_warning() {
+    // M3 severity exit criterion at the CLI boundary: a warning-only conflict
+    // (dma_priority > irq_priority on the same peripheral) still exits 0, but
+    // the warning is printed (prefixed "warning:", not "error:").
+    let out = run_check("priority_inversion.toml");
+    assert!(
+        out.status.success(),
+        "expected success despite a warning-only conflict, stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let warning_lines = stderr.lines().filter(|l| l.contains("warning:")).count();
+    assert_eq!(
+        warning_lines, 1,
+        "expected exactly one warning, got stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("error:"),
+        "a warnings-only run must not print any error: line, got:\n{stderr}"
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("OK"),
+        "success message should still print, got stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn pa5_collision_error_lines_are_prefixed_error_not_warning() {
+    // Regression: error-severity conflicts must still print "  error: ", not
+    // "  warning: ", now that the prefix is severity-driven instead of fixed.
+    let out = run_check("pa5_collision.toml");
+    assert!(!out.status.success());
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("warning:"),
+        "an error-only run must not print any warning: line, got:\n{stderr}"
     );
 }
 
@@ -250,6 +392,298 @@ fn init_f411re_project_passes_check_and_builds() {
     // Codegen runs (the cross-compile may fail without a toolchain).
     let _ = nucleus(&["build".as_ref(), proj.path().as_os_str()]);
     assert!(proj.path().join("src/generated/nucleus_init.c").exists());
+}
+
+// ---- M4: `nucleus route` -----------------------------------------------
+
+#[test]
+fn route_assigns_pins_and_prints_to_stdout() {
+    let proj = TempProject::new();
+    let toml = proj.path().join("stm32.toml");
+    std::fs::write(&toml, "[peripherals.usart2]\n").unwrap();
+
+    let out = nucleus(&["route".as_ref(), toml.as_os_str()]);
+    assert!(
+        out.status.success(),
+        "expected route to succeed, stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("tx = \"PA2\"") && stdout.contains("rx = \"PA3\""),
+        "expected routed pins in stdout, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn route_writes_to_out_path_and_not_stdout() {
+    let proj = TempProject::new();
+    let toml = proj.path().join("stm32.toml");
+    std::fs::write(&toml, "[peripherals.usart2]\n").unwrap();
+    let out_path = proj.path().join("routed.toml");
+
+    let out = nucleus(&[
+        "route".as_ref(),
+        toml.as_os_str(),
+        "--out".as_ref(),
+        out_path.as_os_str(),
+    ]);
+    assert!(
+        out.status.success(),
+        "expected route to succeed, stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("tx = \"PA2\""),
+        "routed TOML should go to --out, not stdout, got stdout:\n{stdout}"
+    );
+
+    let written = std::fs::read_to_string(&out_path).unwrap();
+    assert!(
+        written.contains("tx = \"PA2\"") && written.contains("rx = \"PA3\""),
+        "expected routed pins in {}, got:\n{written}",
+        out_path.display()
+    );
+}
+
+#[test]
+fn route_unroutable_config_exits_nonzero_and_writes_no_file() {
+    let proj = TempProject::new();
+    let toml = proj.path().join("stm32.toml");
+    // USART2_TX's only candidate is PA2; pre-occupy it so routing fails.
+    std::fs::write(
+        &toml,
+        "[peripherals.tim5]\nchannel3 = \"PA2\"\n\n[peripherals.usart2]\n",
+    )
+    .unwrap();
+    let out_path = proj.path().join("routed.toml");
+
+    let out = nucleus(&[
+        "route".as_ref(),
+        toml.as_os_str(),
+        "--out".as_ref(),
+        out_path.as_os_str(),
+    ]);
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit on unroutable config"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("error:"),
+        "expected an error:-prefixed conflict, got stderr:\n{stderr}"
+    );
+    assert!(
+        !out_path.exists(),
+        "no file should be written on a failed route"
+    );
+}
+
+// ---- M4: golden fixtures for `nucleus route` ---------------------------
+
+#[test]
+fn route_simple_fixture_assigns_pins_deterministically() {
+    // usart2 + spi1, no pins set: each required role has exactly one
+    // uncontended candidate on the F446, so the route is trivial and exact.
+    let out = run_route("route_simple.toml");
+    assert!(
+        out.status.success(),
+        "expected route_simple.toml to route, stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("tx = \"PA2\"")
+            && stdout.contains("rx = \"PA3\"")
+            && stdout.contains("mosi = \"PA7\"")
+            && stdout.contains("miso = \"PA6\"")
+            && stdout.contains("sck = \"PA5\""),
+        "expected routed pins in stdout, got:\n{stdout}"
+    );
+}
+
+#[test]
+fn route_simple_output_passes_a_chained_check() {
+    // Issue #20's explicit "passthrough" acceptance criterion: the routed
+    // output is itself a valid stm32.toml. Route route_simple.toml, write its
+    // stdout to a tempfile, and feed that path straight into `nucleus check`.
+    let routed = run_route("route_simple.toml");
+    assert!(routed.status.success());
+
+    let proj = TempProject::new();
+    let out_path = proj.path().join("routed.toml");
+    std::fs::write(&out_path, &routed.stdout).unwrap();
+
+    let checked = nucleus(&["check".as_ref(), out_path.as_os_str()]);
+    assert!(
+        checked.status.success(),
+        "routed output should pass check, stderr:\n{}",
+        String::from_utf8_lossy(&checked.stderr)
+    );
+}
+
+#[test]
+fn route_complex_fixture_is_reproducible() {
+    // Issue #20's "optimal assignment reproducible" criterion: four
+    // uncontended peripheral kinds at once, routed twice, must produce
+    // byte-identical output both times.
+    let first = run_route("route_complex.toml");
+    assert!(
+        first.status.success(),
+        "expected route_complex.toml to route, stderr:\n{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let second = run_route("route_complex.toml");
+    assert!(second.status.success());
+
+    assert_eq!(
+        first.stdout, second.stdout,
+        "routed output must be byte-identical across runs"
+    );
+}
+
+#[test]
+fn route_overconstrained_fixture_exits_nonzero_naming_stuck_role() {
+    // tim5.channel3 pre-occupies PA2, USART2_TX's only candidate -> Unroutable.
+    let out = run_route("route_overconstrained.toml");
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit on an overconstrained config"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("error:")
+            && stderr.contains("unroutable [USART2_TX]")
+            && stderr.contains("PA2")
+            && stderr.contains("tim5.channel3"),
+        "error should name the stuck role and what occupies its candidate, got:\n{stderr}"
+    );
+}
+
+// ---- M6: `nucleus test` -------------------------------------------------
+
+#[test]
+fn test_with_no_blocks_succeeds_and_prints_message() {
+    let proj = TempProject::new();
+    std::fs::write(
+        proj.path().join("stm32.toml"),
+        "[device]\nfamily = \"STM32F446RE\"\n",
+    )
+    .unwrap();
+
+    let out = nucleus(&["test".as_ref(), proj.path().as_os_str()]);
+    assert!(
+        out.status.success(),
+        "expected success with no [[test]] blocks, stderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("no [[test]] blocks defined"),
+        "expected the no-tests message, got stdout:\n{stdout}"
+    );
+}
+
+#[test]
+fn test_with_invalid_assertion_fails_with_conflict() {
+    let proj = TempProject::new();
+    std::fs::write(
+        proj.path().join("stm32.toml"),
+        "[device]\nfamily = \"STM32F446RE\"\n\n[[test]]\nname = \"bogus\"\nassertion = \"this is not a real assertion\"\n",
+    )
+    .unwrap();
+
+    let out = nucleus(&["test".as_ref(), proj.path().as_os_str()]);
+    assert!(
+        !out.status.success(),
+        "expected failure on an invalid [[test]] assertion"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("error:") && stderr.contains("conflict"),
+        "expected a printed conflict, got stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_with_unknown_test_name_fails() {
+    let proj = TempProject::new();
+    std::fs::write(
+        proj.path().join("stm32.toml"),
+        "[device]\nfamily = \"STM32F446RE\"\n\n[[test]]\nname = \"real_test\"\nassertion = \"pin PA5 is high within 10ms\"\n",
+    )
+    .unwrap();
+
+    let out = nucleus(&[
+        "test".as_ref(),
+        proj.path().as_os_str(),
+        "--test".as_ref(),
+        "does_not_exist".as_ref(),
+    ]);
+    assert!(
+        !out.status.success(),
+        "expected failure when --test names a nonexistent test"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no test named"),
+        "expected the no-test-named message, got stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_with_missing_firmware_fails_before_touching_a_backend() {
+    let proj = TempProject::new();
+    std::fs::write(
+        proj.path().join("stm32.toml"),
+        "[device]\nfamily = \"STM32F446RE\"\n\n[[test]]\nname = \"real_test\"\nassertion = \"pin PA5 is high within 10ms\"\n",
+    )
+    .unwrap();
+    // Deliberately do not run `nucleus build` — build/firmware.bin won't exist.
+
+    let out = nucleus(&["test".as_ref(), proj.path().as_os_str()]);
+    assert!(
+        !out.status.success(),
+        "expected failure when build/firmware.bin is missing"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("not found") && stderr.contains("nucleus build"),
+        "expected the flash-style 'not found, run nucleus build first' message, got stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_with_valid_block_and_present_firmware_reaches_backend_start() {
+    let proj = TempProject::new();
+    std::fs::write(
+        proj.path().join("stm32.toml"),
+        "[device]\nfamily = \"STM32F446RE\"\n\n[[test]]\nname = \"boot_log\"\nassertion = \"trace event \\\"O\\\" within 500ms\"\n",
+    )
+    .unwrap();
+    // Present-but-fake firmware: empty files are enough to pass the
+    // existence check in main.rs; an empty ELF will fail to actually boot
+    // (or be skipped if the backend's tool isn't installed), but that's not
+    // what this test asserts — it only proves the CLI gets past the
+    // "run `nucleus build` first" gate and attempts a backend.
+    std::fs::create_dir_all(proj.path().join("build")).unwrap();
+    std::fs::write(proj.path().join("build/firmware"), b"").unwrap();
+    std::fs::write(proj.path().join("build/firmware.bin"), b"").unwrap();
+
+    let out = nucleus(&["test".as_ref(), proj.path().as_os_str()]);
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("Run `nucleus build` first"),
+        "expected the firmware-found gate to pass, got stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
 }
 
 #[test]

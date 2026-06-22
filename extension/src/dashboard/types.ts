@@ -31,3 +31,19 @@ export interface Series {
 }
 
 export type ConnectionStatus = "connecting" | "open" | "closed";
+
+// History mode. Mirrors nucleus_history::{RunSummary, HistorySummary} from
+// `nucleus history --graph`; the dashboard only renders it (Rust does the
+// counting).
+
+export interface RunSummary {
+  timestamp: number;
+  pass: number;
+  fail: number;
+  skip: number;
+}
+
+export interface HistorySummary {
+  schema: string;
+  runs: RunSummary[];
+}

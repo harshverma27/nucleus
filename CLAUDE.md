@@ -4,29 +4,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-**Phases 1, 2, 3, 4, 5, 6, and 7 are complete.**
+**v1 (Phases 1–8) shipped. v2 (M1–M10 verifier/HIL/lockstep) underway.**
 
-Phase 1: `crates/nucleus-db` — a pin/AF/peripheral model with lookup APIs, generated at build time (`build.rs`) from ST's open pin data XML vendored in `crates/nucleus-db/packdata/`. The full F446RE table (~275 mappings across 45 GPIOs) is byte-deterministic and cross-validated by a unit test against a hand-verified datasheet seed (`src/data.rs::SEED`).
+v1 complete: `nucleus-db` (F446RE + F411RE pin/AF/peripheral, byte-deterministic) → `nucleus-compiler` + `nucleus-cli` (parser, 4-conflict solver) → HAL codegen + `init`/`build`/`flash` → `nucleus-lsp` (LSP server, diagnostics/hover) → `nucleus-itm` (zero-panic ITM decoder, fuzz-tested) + `nucleus-trace` (WebSocket, JSON events) → React/Canvas dashboard + DWT decoding → Phase 7 distribution (crates.io, GitHub Marketplace, cross-platform release automation).
 
-Phase 2: `crates/nucleus-compiler` (`stm32.toml` parser + hardware constraint solver) and `crates/nucleus-cli` (the `nucleus` binary). `nucleus check <path>` parses a config, validates it against the F446RE database, prints conflicts, and exits non-zero on any error (so CI can gate on it). The solver detects all four Phase-2 conflict classes — pin collision, AF mismatch, missing required pins, clock-domain-disabled — each unit-tested; a CLI integration test (`crates/nucleus-cli/tests/cli.rs`) drives the binary against repo fixtures in `tests/fixtures/`, including the deliberate PA5-collision fixture that must produce exactly one error. Per the scope rules there is no DMA-collision detection and only basic "is the bus clock enabled?" clock checking (driven by an optional `[clocks]` section, default all-enabled).
+v2 (current branch: `20-v2-week-1-verify-completion-prove-infrastructure`) adds a verifier + dual-backend HIL loop:
 
-Phase 3: HAL codegen in `nucleus-compiler` (`src/codegen.rs`) and the `nucleus init`/`build`/`flash` orchestration in `nucleus-cli`. `nucleus init` scaffolds a complete project (`src/scaffold.rs` templates: `stm32.toml`, `CMakeLists.txt`, `cmake/` cross-toolchain file, `src/main.c`, CI workflow, `.gitignore`) and is idempotent — it never overwrites existing files. `nucleus build` (`src/firmware.rs`) validates the config, refuses to generate code if there are conflicts, writes `src/generated/nucleus_config.h` and `nucleus_init.c`, then drives CMake + arm-none-eabi-gcc; a missing cross toolchain yields a clear error (codegen still runs and is observable). `nucleus flash` programs `build/firmware.bin` with `st-flash`. The generated `Nucleus_Init()` calls only stock `HAL_*_Init` functions with resolved params from typed config structs, and configures GPIO alternate-function muxing using AF numbers from `nucleus-db` (`GPIO_AF<n>_<PERIPH>` macros) — it does not reimplement the HAL.
+**M1 — Clock-tree solver** ✅ DONE
+- Family-parameterized oscillator/PLL/prescaler model + frequency math
+- Validates frequency against silicon limits (APB1 ≤ 45 MHz, APB2 ≤ 90 MHz, SYSCLK ≤ 180 MHz on F446)
+- Rejects over-clocked buses, unreachable baud rates
+- `Conflict::ClockConstraint` in solver, surfaces via LSP
 
-Phase 4: `crates/nucleus-lsp` — a `tower-lsp` server wrapping the compiler, started by `nucleus lsp` over stdio. The real logic lives in `src/analysis.rs` as **pure, synchronous, unit-tested** functions (`diagnostics`/`hover`/`completion`): `stm32.toml` text (+ cursor) → LSP payloads. `src/server.rs` is a thin async shell that keeps an in-memory document map (FULL text sync), publishes diagnostics on open/change, and delegates hover/completion. The analysis layer maps each `Conflict` to the most relevant source span by text-searching the relevant `[peripherals.<key>]` table region (a collision underlines every colliding pin site; missing-pin/clock conflicts underline the table header) — it does **not** re-parse with spans. Hover on a pin token shows that pin's full AF table from `nucleus-db`; completion offers pin names when the cursor is on a value line inside a peripherals table. The VS Code extension (`extension/`, TypeScript, esbuild-bundled) is a **thin client only**: `src/extension.ts` activates on `workspaceContains:**/stm32.toml`, spawns `nucleus lsp`, and wires `vscode-languageclient` — zero business logic. (The extension is not built in the Rust CI gate; it needs `npm install`.)
+**M2 — DMA arbitration** ✅ DONE
+- DMA1/DMA2 streams × channels + peripheral-request map (from RM0390/RM0383)
+- Detects stream collisions, suggests alternatives
+- `Conflict::DmaCollision` in solver, surfaces via LSP
 
-Phase 5: `crates/nucleus-itm` — a hand-rolled, **zero-dependency, never-panic, streaming** ARM CoreSight ITM/SWO decoder (`Decoder::decode(&[u8]) -> Vec<Packet>`). It length-checks every access, buffers partial packets across read boundaries, resyncs on synchronization packets, skips unrecognized protocol headers, and caps its buffer (O(1) memory). Classifies source packets (SWIT software / DWT hardware, 1/2/4-byte), overflow, sync, local/global timestamps, and extension packets per DDI0403E §C1.10. A randomized test (deterministic xorshift) asserts no panic and chunk-invariance over thousands of arbitrary streams — this is the fuzz requirement. `crates/nucleus-trace` turns packets into JSON `TraceEvent`s (`src/translate.rs`, pure + unit-tested: port 0 → reassembled UTF-8 log lines; ports 1–7 → typed f32/u16/u32/i32 named by `[[trace.variables]]`), and `src/server.rs` is a `TraceServer` that owns the decode pipeline and broadcasts JSON to WebSocket clients (tokio-tungstenite, default `:7878`); `src/source.rs` supplies bytes from an OpenOCD TCP trace port or a captured-file replay, with a best-effort OpenOCD telnet setup helper. `nucleus trace` wires it up (`--replay`, `--trace-tcp`, `--openocd`, `--ws-port`, `--config`). An integration test drives a real WebSocket client end-to-end. The "validated against a real NUCLEO-F446RE" criterion is a maintainer step needing hardware + OpenOCD; CI validates against synthetic/replayed captures.
+**M3–M10 in progress** (see GitHub issues #19 umbrella, #20 Week 1, #21 Week 2)
+- M3: IRQ/NVIC verifier (EXTI shared lines, enabled-but-unhandled)
+- M4: Constraint auto-router (CSP solver: declare intent, get pinout)
+- M5: Dual-backend HIL substrate (QEMU + hardware backends)
+- M6: Declarative tests (`[[test]]` blocks in stm32.toml)
+- M7: Scripted tests (device agent + host SDK)
+- M8: Project ledger (`.nucleus/` version store)
+- M9: History graphs + CI-native HIL (PR summary with per-backend results)
+- M10: Lockstep co-execution (detect sim↔silicon divergence)
 
-Phase 6: the React/Canvas trace dashboard under `extension/src/dashboard/`, plus DWT CPU-load decoding. `nucleus-trace::translate` now turns DWT periodic PC-sample packets (`Packet::Hardware` discriminator 2: a single `0x00` byte = asleep, a 4-byte PC = running) into a rolling `TraceEvent::CpuLoad { load }` averaged over a 32-sample window (unit-tested). The dashboard is a **thin display client**: a `TraceStore` (`store.ts`) holds WebSocket data mutated in place at the trace rate, the UI re-reads it on an animation-frame tick (`useTick.ts`) to avoid drowning React, and `types.ts`'s `TraceEvent` mirrors the Rust serialization (the only daemon↔dashboard coupling). Panels: `LogPanel` (timestamped, search/filter, follow, export-as-text), `VariableChart` (Canvas line chart, auto-scaling Y, rolling 30 s window, up to 7 series), `CpuLoadPanel` (Canvas strip), composed with draggable `SplitPane`s and a dark/light toggle. One esbuild bundle runs identically in a browser (`dist/index.html`) and the VS Code webview hosted by `extension/src/tracePanel.ts` (CSP-locked, nonce'd, `connect-src ws://localhost:*`), opened via the `nucleus.openDashboard` command. The TypeScript is type-checked (`tsc --noEmit`) and bundled (esbuild) but is **not** part of the Rust `make check` gate — build it with `cd extension && npm install && npm run build`.
+See `docs/superpowers/specs/2026-06-17-nucleus-v2-design.md` for the full v2 thesis and architecture.
 
-Phase 7: distribution + release automation. Every crate carries crates.io publish metadata (versioned path deps like `nucleus-db = { path = "...", version = "0.0.1" }`, plus `keywords`/`categories`/`readme`); `cargo publish --dry-run` packages cleanly. `.github/workflows/release.yml` fires on a `v*` tag and builds cross-platform `nucleus` binaries (5 targets incl. aarch64 via the cross linker) packaged as tar.gz/zip + SHA-256, packages the `.vsix`, cuts a GitHub Release with generated notes + all artifacts, and publishes crates (dependency order) + the Marketplace extension. **Publishing steps are secret-gated** (`CARGO_REGISTRY_TOKEN`, `VSCE_PAT`) so they no-op on forks and until a maintainer configures tokens — the first real publish is a maintainer action, not something CI does unattended. `ci.yml` gained an `extension` job (npm ci + typecheck + bundle). A reusable composite action at `.github/actions/nucleus/action.yml` installs the CLI, runs `check` (+ optional `build`), and posts a PR summary (conflict count, firmware size) via job summary + an upserted PR comment; the copy-paste `nucleus.yml` is in `docs/ci.md`. Root now has `LICENSE-MIT`, `LICENSE-APACHE` (dual license), `CONTRIBUTING.md`, `CHANGELOG.md`, and `docs/` (installation/cli/ci); the full mdBook site is Phase 8.
-
-**The entire `nucleus` CLI surface is live** (`check`/`init`/`build`/`flash`/`lsp`/`trace`) and the extension provides both the LSP client and the trace dashboard. Only `xtask/` remains a `README.md` placeholder; **Phase 8** is in progress. Its second-MCU-family exit criterion is **done**: STM32F411RE (NUCLEO-F411RE) is supported end-to-end — a second build-time-generated AF table in `nucleus-db` (`Database::f411re()`/`has_peripheral()`), a public family-aware `nucleus_compiler::database_for`, a `Conflict::PeripheralUnavailable` variant, `nucleus init --board NUCLEO-F411RE` (via `scaffold::BoardProfile`), family-aware codegen and LSP resolution. The chosen second family is **STM32F411RE** (it shares the STM32F4 HAL), replacing the earlier-proposed STM32L476RG. Remaining Phase 8 work: demo video + public launch (both maintainer/recording steps, not code). When asked to "build" or "run" something that doesn't exist, the task is usually to *create* it per the design in `README.md`, not to find existing code.
-
-Key `nucleus-compiler` facts: the peripheral model (`src/model.rs`) is a small hand-maintained table mapping `stm32.toml` keys (`tx`, `mosi`, `sda`, `channel1`…) to DB signal names, marking required vs. optional pins, and assigning each peripheral to an F446 bus (APB1/APB2/AHB1). Peripheral instance names map to DB names by upper-casing (`usart2` → `USART2`); the codegen handle suffix is the instance's **trailing** digit run (`i2c1` → `hi2c1`, never `hi2c21`). The solver returns conflicts in deterministic order; collisions are reported once per over-subscribed pin, not per pair. Codegen output is byte-deterministic. The "compiles/flashes on real hardware" exit criterion is a maintainer step that needs the ARM toolchain + an STM32CubeF4 HAL checkout (wired via `STM32CUBE_PATH` in the scaffolded CMake) + the physical NUCLEO-F446RE; CI verifies codegen structure, not the on-board flash.
-
-Key `nucleus-db` facts: one (pin, AF) can carry **multiple** signals (SPI/I2S share AF numbers), so `Database::lookup` returns an iterator, not an `Option`. `src/pack.rs` is deliberately self-contained (no `crate::` types) because `build.rs` includes it via `#[path]`. Upstream data anomalies are never fixed by editing `packdata/` — structural ones are normalized in the parser (documented at `pack::PATCHES`), per-entry ones go in the `PATCHES` table.
-
-`README.md` (root) is the authoritative product spec and roadmap. Read it before doing design or implementation work — it defines the component boundaries, the `stm32.toml` format, the 8-phase roadmap (each phase gated by measurable exit criteria), and known hard problems. `tasks.txt` holds the current Week 1 task breakdown for the Phase 1 constraint database.
+When asked to "build" or "run" something that doesn't exist, the task is usually to *create* it per the design in `README.md` v2 spec or the milestone issues, not to find existing code.
 
 ## What Nucleus is
 
@@ -37,27 +44,52 @@ A CLI-first STM32 developer platform with two halves:
 
 ## Architectural rules (do not violate)
 
-These come directly from the README's "Scope Discipline Rules" and codegen strategy. They are binding constraints, not suggestions:
+These are binding constraints from README v1 + v2 design. Non-negotiable:
 
-1. **The extension contains zero business logic.** Any constraint checking, decoding, or validation belongs in the Rust CLI. If tempted to add logic to TypeScript, stop — it goes in a crate.
-2. **The codegen does not reimplement the HAL.** Generated `nucleus_init.c` calls standard ST HAL `Init` functions (`HAL_UART_Init`, etc.) with resolved parameters via typed config structs in `nucleus_config.h`. Keep generated calls to `Init` functions only so ST HAL updates don't break us.
-3. **One MCU through Phase 7: NUCLEO-F446RE.** The second MCU family is **STM32F411RE** (NUCLEO-F411RE), landed in Phase 8 to prove the DB design generalizes — chosen over the earlier-named STM32L476RG because it shares the STM32F4 HAL. (Note: README Week 1 text references the F411 pack as the parsing source — the vendored CMSIS pack ships both F411 and F446 headers.)
-4. **No DMA collision detection through Phase 7. No full clock-tree solver (not scheduled).** The only clock validation is basic clock-domain checking ("is the peripheral's bus clock enabled?"), which ships in Phase 2.
+1. **The extension contains zero business logic.** Any constraint checking, decoding, validation belongs in the Rust CLI. If tempted to add logic to TypeScript, stop — it goes in a crate.
+2. **The codegen does not reimplement the HAL.** Generated `nucleus_init.c` calls only stock `HAL_*_Init` (e.g. `HAL_UART_Init`) with resolved params via typed config structs in `nucleus_config.h`. Keep it to Init calls so ST HAL updates don't break us.
+3. **Target MCUs: F446RE + F411RE.** Both shipped and supported end-to-end (two AF tables, family-aware lookups, family-specific constraints for clocks/DMA/IRQ). No new families in v2.
+4. **v2 deliberately lifts v1 limits:** M1 (clock-tree solver) and M2 (DMA arbitration) are done. M3–M10 add IRQ, auto-routing, dual-backend HIL, and lockstep — this is the whole point of v2. See the v2 design spec.
 5. **Local tool only** — no cloud registry, no upload features.
-6. **The published-toolchain milestone is Phase 7:** `cargo install` + VS Code Marketplace + GitHub Actions release automation (cross-platform binaries, crate publish, `.vsix` upload on tag). This distribution/CI-CD work is the headline outcome — treat it as a first-class phase, not an afterthought.
+6. **Phase 7 (v1) distribution is complete:** `cargo install` works, extension on Marketplace, cross-platform release automation in place.
 
-## Workspace layout (intended)
+## Workspace layout
 
-Multi-crate Cargo workspace. Each crate is independently testable; shared logic lives in lib crates and `nucleus-cli` is the only binary:
+Multi-crate Cargo workspace. Each crate independently testable; shared logic in lib crates; `nucleus-cli` is the only binary.
 
-- `nucleus-cli` — binary; command dispatch, orchestrates compiler/build/trace.
-- `nucleus-compiler` — TOML parser, constraint solver, codegen.
-- `nucleus-db` — STM32 constraint database; build-time pack parsing/normalization; pin/AF/peripheral lookup. The DB is embedded at compile time (via `build.rs` or `xtask`) and must produce **deterministic output** for testable CI.
-- `nucleus-lsp` — `tower-lsp` server wrapping `nucleus-compiler` (diagnostics + hover).
-- `nucleus-itm` — hand-rolled ARM CoreSight ITM packet decoder. Must never panic on malformed input (handle packets spanning read boundaries, overflow packets, resync after dropped connection); fuzz-test it.
-- `nucleus-trace` — OpenOCD telnet integration + `tokio-tungstenite` WebSocket server (port 7878).
-- `xtask` — developer automation (pack parsing, codegen, CI helpers), invoked as `cargo xtask`.
-- `extension/` — VS Code extension; React dashboard under `extension/src/dashboard/`, bundled by esbuild.
+**v1 + v2 shared crates:**
+- `nucleus-cli` — binary; command dispatch, orchestrates compiler/build/trace/**test**/history/lockstep.
+- `nucleus-compiler` — TOML parser, constraint solver (M1–M3 conflicts), codegen, `[[test]]` parsing (M6).
+- `nucleus-db` — STM32 constraint database: pin/AF/peripheral lookup (v1), plus clock-tree (M1), DMA (M2), IRQ/NVIC (M3) models. Build-time-generated from vendored ST pack data; deterministic output for CI.
+- `nucleus-lsp` — `tower-lsp` server wrapping compiler (diagnostics/hover/completion for config + `[[test]]` blocks).
+- `nucleus-itm` — zero-dependency, never-panic ITM/CoreSight decoder. Reused by M5 HIL backends.
+- `nucleus-trace` — OpenOCD telnet + WebSocket server. `src/source.rs` reused by M5 hardware backend.
+- `xtask` — build helpers (future: pack generation, xtask commands).
+- `extension/` — VS Code client; React dashboard (Phase 6, reused for M9 history graphs).
+
+**v2 new crates:**
+- `nucleus-hil` *(M5 onwards)* — host-side test runner; backend trait + QEMU + hardware backends; observation API; M10 lockstep comparator.
+- `nucleus-ledger` *(M8 onwards)* — `.nucleus/` version store; content-addressed storage; query API for `history`/`show` verbs.
+
+## Key facts for v2 work
+
+**`nucleus-compiler` solver:** The `Conflict` enum carries M1–M3 variants: `ClockConstraint` (M1), `DmaCollision` (M2), `IrqConflict` (M3), plus v1's pin-related conflicts. All checked in `src/solver.rs`, deterministic order, exit non-zero on any. LSP (`nucleus-lsp::analysis.rs`) maps each conflict to the most relevant source span automatically.
+
+**`nucleus-db` model layers:**
+- v1: pin/AF/peripheral from pack XML (deterministic)
+- M1: `src/clock.rs` — family-parameterized clock-tree model (hand-maintained, seed-tested against RM0390/RM0383)
+- M2: `src/dma.rs` — DMA request map (hand-maintained, RM tables 28–29)
+- M3: `src/irq.rs` — NVIC/EXTI model (hand-maintained, RM IRQ tables)
+
+**New v2 crates:** `nucleus-hil` (M5+) owns dual-backend runner, observation API, lockstep. `nucleus-ledger` (M8+) owns version store under `.nucleus/`.
+
+**Testing discipline:** v1 conflicts unit-tested. v2 adds:
+- M1: hand-verified clock frequencies (both families)
+- M2: DMA tables from RM (both families)
+- M3: EXTI groupings from RM (both families)
+- M4–M10: golden fixtures (parser, solver output) + HIL integration tests (QEMU always; hardware optional)
+
+**README + issues:** `README.md` is authoritative spec. GitHub #19 (umbrella), #20 (Week 1: M3–M5), #21 (Week 2: M6–M10) track the work. `docs/superpowers/specs/2026-06-17-nucleus-v2-design.md` is the full thesis.
 
 ## Vendored data sources
 
@@ -68,15 +100,18 @@ Both are read-only upstream data — never hand-edit them; corrections to pack d
 
 ## Commands
 
-The `Makefile` is the task runner; `make` targets and CI run the identical checks.
+`Makefile` is the task runner. `make` targets and CI run identical checks.
 
-- Full local gate (run before pushing): `make check` (= `fmt-check` + `lint` + `test`)
+**Local workflow:**
+- Full gate (run before pushing): `make check` (= `fmt-check` + `lint` + `test`)
 - Build: `make build` / `cargo build -p <crate>`
-- Test: `make test` / `cargo test -p <crate>` / single test: `cargo test -p <crate> <test_name>`
-- Format / lint: `make fmt` (apply) · `make fmt-check` · `make lint` (`clippy -D warnings`)
-- DB/codegen helpers (future): `cargo xtask <command>`
-- Extension (future): `npm install` then `npm run build` (esbuild) inside `extension/`
+- Test Rust: `make test` / `cargo test -p <crate>` / single: `cargo test -p <crate> <test_name>`
+- Format / lint: `make fmt` · `make fmt-check` · `make lint` (`clippy -D warnings`)
+- Extension: `cd extension && npm install && npm run build` (TypeScript, not part of `make check`)
 
-CI lives in `.github/workflows/`: `ci.yml` runs the gate + a cross-platform build matrix on every PR; `release.yml` is the Phase 7 skeleton that builds cross-platform artifacts on a `v*` tag.
+**CLI surface (v1 + v2):**
+- v1 complete: `nucleus init | check | build | flash | lsp | trace`
+- v2 adds: `nucleus test` (run declarative/scripted tests on both backends), `nucleus history` (list versions + results), `nucleus show` (version details), `nucleus lockstep` (divergence detection)
+- `nucleus check` exits non-zero on any conflict (CI-gatable)
 
-The CLI surface (per README) is `nucleus init | check | build | flash | trace | lsp`. `nucleus check` must exit non-zero on any conflict so CI can gate on it.
+**CI:** `.github/workflows/ci.yml` runs gate + cross-platform build on every PR; `release.yml` builds artifacts on `v*` tag.

@@ -10,6 +10,7 @@ import {
   TransportKind,
 } from "vscode-languageclient/node";
 
+import { openHistory } from "./historyPanel";
 import { openDashboard } from "./tracePanel";
 
 let client: LanguageClient | undefined;
@@ -19,6 +20,13 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("nucleus.openDashboard", () =>
       openDashboard(context)
+    )
+  );
+
+  // History mode: render the ledger trend (M9) in the same webview.
+  context.subscriptions.push(
+    vscode.commands.registerCommand("nucleus.openHistory", () =>
+      openHistory(context)
     )
   );
 

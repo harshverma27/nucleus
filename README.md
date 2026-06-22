@@ -128,8 +128,12 @@ The backbone everything else builds on. Acts as `cargo` does for Rust projects.
 |---|---|
 | `nucleus init` | Scaffold a new STM32 project: `stm32.toml`, `CMakeLists.txt`, `src/main.c`, `.github/workflows/ci.yml`. Use `--board` to choose the target (`NUCLEO-F446RE` default, or `NUCLEO-F411RE`) |
 | `nucleus check` | Validate `stm32.toml` against the constraint database, print conflicts |
+| `nucleus route` | Auto-assign pins for peripherals declared without them (M4 auto-router), write a fully-specified `stm32.toml` |
 | `nucleus build` | Run CMake + arm-none-eabi-gcc, emit firmware `.elf` and `.bin` |
 | `nucleus flash` | Invoke `st-flash` or OpenOCD to program the Nucleo board |
+| `nucleus test` | Run `[[test]]` assertions on the QEMU twin and/or real hardware (M5–M7); appends each run to `tests/test_history.json` |
+| `nucleus history` | List recorded test runs with per-run pass/fail counts (from `tests/test_history.json`). `--graph` emits the per-run summary JSON for the dashboard / export; `--last N` limits to the most recent N |
+| `nucleus show [run]` | Show every assertion result for one run (defaults to the latest) |
 | `nucleus trace` | Start the ITM daemon + open the dashboard in VS Code or browser |
 | `nucleus lsp` | Start the language server (called by the VS Code extension, not by humans) |
 
@@ -161,11 +165,11 @@ For Phase 1, the database covers exactly one MCU: **STM32F446RE** (the chip on t
 - **Clock domain disabled:** A peripheral configured but its bus clock (`APB1`/`APB2`) not enabled
 - **Missing pins:** A peripheral declared without all required pins (e.g. SPI without MOSI)
 
-#### What the compiler deliberately skips (early phases)
+#### What the compiler deliberately skipped in v1 (now lifted in v2)
 
-- DMA channel collision detection — hard, device-specific, low perceived value early on
-- Full clock tree validation — complex, not scheduled (only basic clock-domain checks ship, in Phase 2)
-- Middleware integration — too much maintenance burden
+- **DMA stream collision detection** — **now shipped (v2 milestone M2):** the solver models the DMA1/DMA2 request map and reports a `DmaCollision` (naming both contenders + a free-alternative suggestion) when two peripherals fight for one stream. Peripherals opt in with a `dma` key, so default configs stay clean.
+- **Full clock-tree validation** — **now shipped (v2 milestone M1):** a real frequency solver (PLL/prescaler math, per-peripheral derivation) replaces v1's boolean clock-domain check and rejects over-clocked buses and unreachable baud rates. See [`docs/superpowers/specs/2026-06-17-nucleus-v2-design.md`](docs/superpowers/specs/2026-06-17-nucleus-v2-design.md).
+- Middleware integration — too much maintenance burden (still out of scope)
 
 #### HAL codegen strategy (important architectural decision)
 
@@ -370,7 +374,7 @@ Scope: `nucleus-db`. Parse the alternate-function tables (all GPIOs PA0–PC15, 
 
 **Goal:** Parse `stm32.toml` and catch every Phase-1-class conflict.
 
-Scope: `nucleus-compiler` parser + solver, surfaced via `nucleus check`. Conflict classes: pin collision, AF mismatch, missing required pins, clock domain disabled. No DMA collision detection; no full clock-tree solving (only "is the bus clock enabled?").
+Scope: `nucleus-compiler` parser + solver, surfaced via `nucleus check`. Conflict classes: pin collision, AF mismatch, missing required pins, clock domain disabled. (v2 adds two more conflict classes on top of this Phase-2 base: a full clock-tree solver — M1 — and DMA stream arbitration — M2.)
 
 Basic clock-domain checking reads an optional `[clocks]` section in `stm32.toml`; each bus (`ahb1`/`apb1`/`apb2`) defaults to enabled, so omitting the section never produces a false "clock disabled" error:
 
@@ -532,8 +536,8 @@ ST periodically updates their HAL library. The generated `nucleus_init.c` calls 
 These are constraints to follow throughout development. Do not negotiate with them mid-project.
 
 1. **One MCU only through Phase 7.** NUCLEO-F446RE. Adding a second family is Phase 8, not earlier.
-2. **No DMA collision detection** through the published-toolchain milestone (Phase 7). Ship pin conflict detection first. DMA is complex and low perceived value early.
-3. **No full clock tree solver.** Basic clock-domain validation (is the bus enabled?) ships in Phase 2. Full PLL tree solving is a research problem on its own and is not scheduled.
+2. ~~**No DMA collision detection** through the published-toolchain milestone (Phase 7).~~ **Lifted in v2 (M2):** DMA stream arbitration now ships — it is a headline differentiator, not early-phase scope creep.
+3. ~~**No full clock tree solver.**~~ **Lifted in v2 (M1):** a real clock-tree frequency solver now ships (replacing the v1 boolean clock-domain check). The Verify pillar of v2 is exactly this deliberate lifting; see the v2 design spec.
 4. **No JetBrains / Neovim extension until after Marketplace launch.** The architecture supports it but build the VS Code extension first.
 5. **No cloud registry.** Nucleus is a local tool. No "upload your config to nucleus.dev" features. Keep the attack surface small.
 6. **The extension contains zero business logic.** If you're tempted to put constraint checking inside the TypeScript extension, don't. It belongs in the Rust CLI.

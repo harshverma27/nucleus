@@ -7,11 +7,15 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 
 import { App } from "./App";
+import { HistorySummary } from "./types";
 import "./dashboard.css";
 
 declare global {
   interface Window {
     NUCLEUS_WS_URL?: string;
+    // History mode: run-summary JSON injected by the webview host (`nucleus
+    // history --graph`). Absent in plain trace mode.
+    NUCLEUS_HISTORY?: HistorySummary;
   }
 }
 
@@ -27,5 +31,7 @@ function resolveWsUrl(): string {
 
 const container = document.getElementById("root");
 if (container) {
-  createRoot(container).render(<App wsUrl={resolveWsUrl()} />);
+  createRoot(container).render(
+    <App wsUrl={resolveWsUrl()} history={window.NUCLEUS_HISTORY} />
+  );
 }

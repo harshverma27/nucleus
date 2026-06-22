@@ -34,6 +34,12 @@ pub struct Config {
     pub clocks: Clocks,
     #[serde(default)]
     pub trace: Trace,
+    /// `[[exti]]` entries — external interrupt pin definitions.
+    #[serde(default)]
+    pub exti: Vec<ExtiPin>,
+    /// `[[test]]` entries — declarative HIL test cases (M6).
+    #[serde(default)]
+    pub test: Vec<TestCase>,
 }
 
 /// The `[device]` section.
@@ -71,8 +77,13 @@ impl Peripheral {
     }
 }
 
-/// The `[clocks]` section. Each field defaults to `true` (enabled) so that an
-/// omitted field never produces a false "clock disabled" error.
+/// The `[clocks]` section.
+///
+/// The boolean bus fields default to `true` (enabled) so an omitted field never
+/// produces a false "clock disabled" error. The clock-tree fields (PLL dividers,
+/// prescalers, source selection) are all `Option`: when absent, the M1 solver
+/// substitutes the family's known-good NUCLEO power-on configuration, so a config
+/// that omits `[clocks]` entirely validates clean.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Clocks {
@@ -82,6 +93,27 @@ pub struct Clocks {
     pub apb1: bool,
     #[serde(default = "enabled")]
     pub apb2: bool,
+
+    /// SYSCLK source: `"hsi"`, `"hse"`, or `"pll"`. Default `"pll"`.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Oscillator feeding the PLL: `"hsi"` or `"hse"`. Default `"hse"`.
+    #[serde(default)]
+    pub pll_source: Option<String>,
+    #[serde(default)]
+    pub pll_m: Option<u32>,
+    #[serde(default)]
+    pub pll_n: Option<u32>,
+    #[serde(default)]
+    pub pll_p: Option<u32>,
+    #[serde(default)]
+    pub pll_q: Option<u32>,
+    #[serde(default)]
+    pub ahb_prescaler: Option<u32>,
+    #[serde(default)]
+    pub apb1_prescaler: Option<u32>,
+    #[serde(default)]
+    pub apb2_prescaler: Option<u32>,
 }
 
 fn enabled() -> bool {
@@ -94,6 +126,15 @@ impl Default for Clocks {
             ahb1: true,
             apb1: true,
             apb2: true,
+            source: None,
+            pll_source: None,
+            pll_m: None,
+            pll_n: None,
+            pll_p: None,
+            pll_q: None,
+            ahb_prescaler: None,
+            apb1_prescaler: None,
+            apb2_prescaler: None,
         }
     }
 }
@@ -118,6 +159,38 @@ pub struct TraceVariable {
     pub port: u8,
     #[serde(rename = "type")]
     pub ty: String,
+}
+
+/// One `[[exti]]` entry.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExtiPin {
+    pub pin: String,
+    #[serde(default)]
+    pub priority: Option<u8>,
+}
+
+/// One `[[test]]` entry — a declarative HIL assertion (M6).
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename = "test")]
+pub struct TestCase {
+    pub name: String,
+    #[serde(default)]
+    pub assertion: String,
+    #[serde(default = "default_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default)]
+    pub backend: Option<String>, // "qemu" | "hardware" | "both"; None = both
+    /// `"declarative"` (default, M6) or `"scripted"` (M7). TOML key is `type`.
+    #[serde(rename = "type", default)]
+    pub kind: Option<String>,
+    /// For `type = "scripted"`: the cargo test name to run. Ignored otherwise.
+    #[serde(default)]
+    pub script: Option<String>,
+}
+
+fn default_timeout_ms() -> u64 {
+    1000
 }
 
 /// Error returned when `stm32.toml` text is not valid TOML or violates the schema.
@@ -197,5 +270,97 @@ mode = 0
         let cfg = parse("[clocks]\napb1 = false\n").unwrap();
         assert!(!cfg.clocks.apb1);
         assert!(cfg.clocks.apb2); // unspecified -> enabled
+    }
+
+    #[test]
+    fn parses_exti_entries() {
+        let cfg = parse(
+            r#"
+[[exti]]
+pin = "PA0"
+priority = 5
+
+[[exti]]
+pin = "PB1"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.exti.len(), 2);
+        assert_eq!(cfg.exti[0].pin, "PA0");
+        assert_eq!(cfg.exti[0].priority, Some(5));
+        assert_eq!(cfg.exti[1].pin, "PB1");
+        assert_eq!(cfg.exti[1].priority, None);
+    }
+
+    #[test]
+    fn parses_minimal_test_block() {
+        let cfg = parse(
+            r#"
+[[test]]
+name = "uart2_echo"
+assertion = "UART2 echoes 'ping' within 10ms"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.test.len(), 1);
+        assert_eq!(cfg.test[0].name, "uart2_echo");
+        assert_eq!(cfg.test[0].assertion, "UART2 echoes 'ping' within 10ms");
+        assert_eq!(cfg.test[0].timeout_ms, 1000);
+        assert_eq!(cfg.test[0].backend, None);
+    }
+
+    #[test]
+    fn parses_fully_specified_test_block() {
+        let cfg = parse(
+            r#"
+[[test]]
+name = "uart2_echo"
+assertion = "UART2 echoes 'ping' within 10ms"
+timeout_ms = 100
+backend = "both"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.test.len(), 1);
+        assert_eq!(cfg.test[0].name, "uart2_echo");
+        assert_eq!(cfg.test[0].assertion, "UART2 echoes 'ping' within 10ms");
+        assert_eq!(cfg.test[0].timeout_ms, 100);
+        assert_eq!(cfg.test[0].backend, Some("both".to_string()));
+    }
+
+    #[test]
+    fn rejects_unknown_field_in_test_block() {
+        let result = parse(
+            r#"
+[[test]]
+name = "uart2_echo"
+assertion = "UART2 echoes 'ping' within 10ms"
+bogus = 1
+"#,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_multiple_test_blocks_in_document_order() {
+        let cfg = parse(
+            r#"
+[[test]]
+name = "first"
+assertion = "pin PA5 is high within 10ms"
+
+[[test]]
+name = "second"
+assertion = "pin PA6 is low within 20ms"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(cfg.test.len(), 2);
+        assert_eq!(cfg.test[0].name, "first");
+        assert_eq!(cfg.test[1].name, "second");
     }
 }
