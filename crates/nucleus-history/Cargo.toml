@@ -1,19 +1,18 @@
 [package]
-name = "nucleus-ledger"
-description = "Nucleus project ledger: append-only, content-addressed store of every project version and its per-backend test results under .nucleus/"
+name = "nucleus-history"
+description = "Nucleus test history: a simple append-on-each-run JSON record of test results per backend (tests/test_history.json)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-keywords = ["stm32", "ledger", "content-addressed", "history"]
+keywords = ["stm32", "test", "history", "hil"]
 categories = ["development-tools", "embedded"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
 
 [lints]
 workspace = true

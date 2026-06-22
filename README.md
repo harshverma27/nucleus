@@ -131,10 +131,9 @@ The backbone everything else builds on. Acts as `cargo` does for Rust projects.
 | `nucleus route` | Auto-assign pins for peripherals declared without them (M4 auto-router), write a fully-specified `stm32.toml` |
 | `nucleus build` | Run CMake + arm-none-eabi-gcc, emit firmware `.elf` and `.bin` |
 | `nucleus flash` | Invoke `st-flash` or OpenOCD to program the Nucleo board |
-| `nucleus test` | Run `[[test]]` assertions on the QEMU twin and/or real hardware (M5–M7) |
-| `nucleus history` | List recorded project versions with per-backend test results (M8). `--graph` emits the trend timeline as JSON for the dashboard / export; `--last N` limits to the most recent N (M9) |
-| `nucleus show <hash>` | Show full detail for one version: verdict, solved config, every test result (M8) |
-| `nucleus report [hash]` | Emit a machine-checkable verification report (JSON): what was proven statically and on which backend at runtime (M9) |
+| `nucleus test` | Run `[[test]]` assertions on the QEMU twin and/or real hardware (M5–M7); appends each run to `tests/test_history.json` |
+| `nucleus history` | List recorded test runs with per-run pass/fail counts (from `tests/test_history.json`). `--graph` emits the per-run summary JSON for the dashboard / export; `--last N` limits to the most recent N |
+| `nucleus show [run]` | Show every assertion result for one run (defaults to the latest) |
 | `nucleus trace` | Start the ITM daemon + open the dashboard in VS Code or browser |
 | `nucleus lsp` | Start the language server (called by the VS Code extension, not by humans) |
 

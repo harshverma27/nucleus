@@ -9,7 +9,7 @@ import { HistoryPanel } from "./HistoryPanel";
 import { LogPanel } from "./LogPanel";
 import { SplitPane } from "./SplitPane";
 import { TraceStore } from "./store";
-import { TrendData } from "./types";
+import { HistorySummary } from "./types";
 import { useTick } from "./useTick";
 import { VariableChart } from "./VariableChart";
 
@@ -17,15 +17,15 @@ type Mode = "trace" | "history";
 
 export function App({
   wsUrl,
-  trend,
+  history,
 }: {
   wsUrl: string;
-  trend?: TrendData;
+  history?: HistorySummary;
 }): JSX.Element {
   const store = useMemo(() => new TraceStore(wsUrl), [wsUrl]);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
-  // Start in history mode when the host injected trend data, otherwise live trace.
-  const [mode, setMode] = useState<Mode>(trend ? "history" : "trace");
+  // Start in history mode when the host injected history data, otherwise live trace.
+  const [mode, setMode] = useState<Mode>(history ? "history" : "trace");
   const tick = useTick(30);
 
   // Only hold the live trace connection open while the trace view is active.
@@ -37,7 +37,7 @@ export function App({
     <div className={`app theme-${theme}`}>
       <header className="app-header">
         <span className="brand">Nucleus</span>
-        {trend && (
+        {history && (
           <span className="mode-toggle">
             <button
               className={mode === "trace" ? "active" : ""}
@@ -71,8 +71,8 @@ export function App({
       </header>
 
       <div className="app-body">
-        {mode === "history" && trend ? (
-          <HistoryPanel trend={trend} />
+        {mode === "history" && history ? (
+          <HistoryPanel summary={history} />
         ) : (
           <SplitPane direction="horizontal" initial={40}>
             <LogPanel store={store} />

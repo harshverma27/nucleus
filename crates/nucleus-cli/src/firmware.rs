@@ -109,8 +109,6 @@ pub fn build(root: &Path) -> ExitCode {
         Some(true)
     ) {
         println!("build OK — firmware in {}", build_dir.display());
-        // Record this build as a ledger version (best-effort; never fails build).
-        crate::ledger::record_version(root);
         ExitCode::SUCCESS
     } else {
         eprintln!("error: firmware build failed.");

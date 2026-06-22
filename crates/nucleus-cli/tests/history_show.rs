@@ -1,6 +1,6 @@
-//! CLI-level coverage for the M8 `nucleus history` / `nucleus show` verbs,
-//! driving the real built binary against a hand-seeded `.nucleus/` ledger so the
-//! verbs are exercised without needing the cross toolchain or a board.
+//! CLI-level coverage for `nucleus history` / `nucleus show`, driving the real
+//! built binary against a hand-seeded `tests/test_history.json` so the verbs are
+//! exercised without needing the cross toolchain or a board.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -17,38 +17,29 @@ fn tempdir() -> PathBuf {
     dir
 }
 
-/// Seed `.nucleus/versions.json` with two versions, one with mixed results.
+/// Seed `tests/test_history.json` with two runs: run 1 mixed, run 2 all-pass.
 fn seed(root: &Path) {
-    let dir = root.join(".nucleus");
+    let dir = root.join("tests");
     std::fs::create_dir_all(&dir).unwrap();
     let json = r#"{
-      "versions": [
+      "runs": [
         {
-          "hash": "aaaa111100000000000000000000000000000000000000000000000000000000",
           "timestamp": 1735689600,
-          "family": "STM32F446RE",
-          "toolchain": "arm-none-eabi-gcc 13.2.0",
-          "stm32_toml": "[device]\nfamily = \"STM32F446RE\"\n",
-          "solved_config": null,
-          "verdict": { "verdict": "approved" },
           "tests": [
             { "name": "echo", "backend": "qemu", "status": "pass", "detail": "ok" },
-            { "name": "echo", "backend": "hardware", "status": "fail", "detail": "no reply" }
+            { "name": "echo", "backend": "hardware", "status": "fail", "detail": "no reply" },
+            { "name": "pa5", "backend": "qemu", "status": "skip", "detail": "not observable" }
           ]
         },
         {
-          "hash": "bbbb222200000000000000000000000000000000000000000000000000000000",
           "timestamp": 1782135909,
-          "family": "STM32F446RE",
-          "toolchain": "arm-none-eabi-gcc 13.2.0",
-          "stm32_toml": "[device]\nfamily = \"STM32F446RE\"\n",
-          "solved_config": null,
-          "verdict": { "verdict": "conflicts", "conflicts": ["TIM2 clock too fast"] },
-          "tests": []
+          "tests": [
+            { "name": "echo", "backend": "qemu", "status": "pass", "detail": "ok" }
+          ]
         }
       ]
     }"#;
-    std::fs::write(dir.join("versions.json"), json).unwrap();
+    std::fs::write(dir.join("test_history.json"), json).unwrap();
 }
 
 fn run(args: &[&str], root: &Path) -> (bool, String) {
@@ -63,81 +54,46 @@ fn run(args: &[&str], root: &Path) -> (bool, String) {
 }
 
 #[test]
-fn history_lists_versions_with_per_backend_results() {
+fn history_lists_runs_with_counts() {
     let root = tempdir();
     seed(&root);
 
     let (ok, out) = run(&["history"], &root);
     assert!(ok, "history should exit 0: {out}");
-    assert!(out.contains("aaaa111"), "short hash of v1: {out}");
-    assert!(out.contains("bbbb222"), "short hash of v2: {out}");
-    assert!(out.contains("qemu 1/1"), "qemu pass count: {out}");
-    assert!(out.contains("hardware 0/1"), "hardware fail count: {out}");
-    assert!(out.contains("approved"), "v1 verdict: {out}");
-    assert!(out.contains("conflict"), "v2 verdict: {out}");
-    // Timestamp formatting.
-    assert!(out.contains("2025-01-01"), "v1 date: {out}");
-
-    std::fs::remove_dir_all(&root).ok();
-}
-
-#[test]
-fn show_resolves_short_hash_and_prints_detail() {
-    let root = tempdir();
-    seed(&root);
-
-    let (ok, out) = run(&["show", "aaaa111"], &root);
-    assert!(ok, "show should exit 0: {out}");
-    assert!(out.contains("aaaa1111"), "full/short hash: {out}");
-    assert!(out.contains("PASS echo [qemu]"), "qemu result line: {out}");
+    assert!(out.contains("#1"), "run 1 listed: {out}");
+    assert!(out.contains("#2"), "run 2 listed: {out}");
     assert!(
-        out.contains("FAIL echo [hardware]"),
-        "hardware result line: {out}"
+        out.contains("1 passed, 1 failed, 1 skipped"),
+        "run 1 counts: {out}"
     );
-    assert!(out.contains("approved"), "verdict: {out}");
+    assert!(out.contains("2025-01-01"), "run 1 date: {out}");
 
     std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
-fn show_unknown_hash_fails() {
-    let root = tempdir();
-    seed(&root);
-
-    let (ok, out) = run(&["show", "deadbeef"], &root);
-    assert!(!ok, "unknown hash must exit non-zero");
-    assert!(out.contains("no version matches"), "error message: {out}");
-
-    std::fs::remove_dir_all(&root).ok();
-}
-
-#[test]
-fn history_empty_when_no_ledger() {
+fn history_empty_when_no_file() {
     let root = tempdir();
     let (ok, out) = run(&["history"], &root);
     assert!(ok);
-    assert!(out.contains("no versions recorded"), "{out}");
+    assert!(out.contains("no test runs recorded"), "{out}");
     std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
-fn history_graph_emits_trend_json() {
+fn history_graph_emits_summary_json() {
     let root = tempdir();
     seed(&root);
 
     let (ok, out) = run(&["history", "--graph"], &root);
     assert!(ok, "history --graph should exit 0: {out}");
     assert!(
-        out.contains("\"schema\": \"nucleus.trend.v1\""),
+        out.contains("\"schema\": \"nucleus.history.v1\""),
         "schema: {out}"
     );
-    assert!(out.contains("\"short\": \"aaaa111\""), "v1 point: {out}");
-    assert!(out.contains("\"short\": \"bbbb222\""), "v2 point: {out}");
-    // v1 has one qemu pass and one hardware fail.
     assert!(out.contains("\"pass\": 1"), "pass count: {out}");
     assert!(out.contains("\"fail\": 1"), "fail count: {out}");
-    // v2 carries a conflict.
-    assert!(out.contains("\"conflicts\": 1"), "conflict count: {out}");
+    assert!(out.contains("\"skip\": 1"), "skip count: {out}");
 
     std::fs::remove_dir_all(&root).ok();
 }
@@ -147,8 +103,8 @@ fn history_graph_empty_is_valid_json() {
     let root = tempdir();
     let (ok, out) = run(&["history", "--graph"], &root);
     assert!(ok);
-    assert!(out.contains("nucleus.trend.v1"), "{out}");
-    assert!(out.contains("\"points\": []"), "{out}");
+    assert!(out.contains("nucleus.history.v1"), "{out}");
+    assert!(out.contains("\"runs\": []"), "{out}");
     std::fs::remove_dir_all(&root).ok();
 }
 
@@ -159,45 +115,48 @@ fn history_last_limits_table() {
 
     let (ok, out) = run(&["history", "--last", "1"], &root);
     assert!(ok);
-    // Only the most recent version (bbbb222) should appear.
-    assert!(out.contains("bbbb222"), "{out}");
-    assert!(
-        !out.contains("aaaa111"),
-        "older version must be dropped: {out}"
-    );
+    assert!(out.contains("#2"), "latest run shown: {out}");
+    assert!(!out.contains("#1 "), "older run dropped: {out}");
 
     std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
-fn report_defaults_to_latest_version() {
+fn show_defaults_to_latest_run() {
     let root = tempdir();
     seed(&root);
 
-    let (ok, out) = run(&["report"], &root);
-    assert!(ok, "report should exit 0: {out}");
-    assert!(
-        out.contains("\"schema\": \"nucleus.verification.v1\""),
-        "schema: {out}"
-    );
-    // Latest is bbbb222 (conflicts, no tests).
-    assert!(out.contains("bbbb222"), "latest hash: {out}");
-    assert!(out.contains("\"approved\": false"), "verdict: {out}");
+    let (ok, out) = run(&["show"], &root);
+    assert!(ok, "show should exit 0: {out}");
+    assert!(out.contains("run      #2"), "latest run: {out}");
+    assert!(out.contains("PASS echo [qemu]"), "result line: {out}");
 
     std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
-fn report_by_hash_lists_proven_backend() {
+fn show_by_index_lists_all_results() {
     let root = tempdir();
     seed(&root);
 
-    let (ok, out) = run(&["report", "aaaa111"], &root);
-    assert!(ok, "report aaaa111 should exit 0: {out}");
-    // qemu passed, hardware failed -> proven_on = ["qemu"].
-    assert!(out.contains("\"proven_on\""), "proven_on field: {out}");
-    assert!(out.contains("\"qemu\""), "qemu proven: {out}");
-    assert!(out.contains("\"approved\": true"), "static check: {out}");
+    let (ok, out) = run(&["show", "1"], &root);
+    assert!(ok, "show 1 should exit 0: {out}");
+    assert!(out.contains("run      #1"), "run 1: {out}");
+    assert!(out.contains("PASS echo [qemu]"), "qemu pass: {out}");
+    assert!(out.contains("FAIL echo [hardware]"), "hardware fail: {out}");
+    assert!(out.contains("SKIP pa5 [qemu]"), "skip line: {out}");
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn show_out_of_range_fails() {
+    let root = tempdir();
+    seed(&root);
+
+    let (ok, out) = run(&["show", "99"], &root);
+    assert!(!ok, "out-of-range run must exit non-zero");
+    assert!(out.contains("no run #99"), "error message: {out}");
 
     std::fs::remove_dir_all(&root).ok();
 }

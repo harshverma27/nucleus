@@ -1,5 +1,5 @@
 name: "Nucleus check"
-description: "Validate stm32.toml with the Nucleus constraint solver, optionally build firmware, run HIL tests on both backends, and post a PR summary with a machine-checkable verification report."
+description: "Validate stm32.toml with the Nucleus constraint solver, optionally build firmware, run HIL tests on both backends, and post a PR summary with per-backend results."
 branding:
   icon: "cpu"
   color: "blue"
@@ -144,27 +144,14 @@ runs:
         } >> "$GITHUB_OUTPUT"
         exit $code
 
-    # Deterministic, machine-checkable verification report for the version that
-    # was just built/tested (the latest ledger entry).
-    - name: Verification report
-      id: report
-      if: ${{ always() && inputs.build == 'true' }}
-      shell: bash
-      run: |
-        set +e
-        nucleus report > "$RUNNER_TEMP/nucleus-report.json" 2>/dev/null
-        if [ -s "$RUNNER_TEMP/nucleus-report.json" ]; then
-          echo "ok=true" >> "$GITHUB_OUTPUT"
-        else
-          echo "ok=false" >> "$GITHUB_OUTPUT"
-        fi
-
-    - name: Upload verification report
-      if: ${{ always() && steps.report.outputs.ok == 'true' }}
+    # `nucleus test` appends this run to tests/test_history.json; publish it so
+    # the run's results travel with the build and the dashboard can read them.
+    - name: Upload test history
+      if: ${{ always() && inputs.build == 'true' && inputs.run_tests == 'true' }}
       uses: actions/upload-artifact@v4
       with:
-        name: nucleus-verification-report
-        path: ${{ runner.temp }}/nucleus-report.json
+        name: nucleus-test-history
+        path: tests/test_history.json
         if-no-files-found: ignore
 
     - name: Build summary
@@ -174,7 +161,6 @@ runs:
         check_out="$(cat "$RUNNER_TEMP/nucleus-check.txt" 2>/dev/null || echo '(no output)')"
         conflicts="${{ steps.check.outputs.conflicts }}"
         size="${{ steps.build.outputs.size }}"
-        report="$RUNNER_TEMP/nucleus-report.json"
         {
           echo "## 🧩 Nucleus"
           echo
@@ -204,13 +190,7 @@ runs:
             else
               echo "    - Hardware: leg skipped (no self-hosted board)"
             fi
-          fi
-
-          # Machine-checkable verification report summary.
-          if [ -s "$report" ] && command -v jq >/dev/null 2>&1; then
-            proven="$(jq -r '.proven_on | join(", ")' "$report")"
-            short="$(jq -r '.short' "$report")"
-            echo "- 🔏 **Verification report** (version \`${short}\`): proven on **${proven:-none}** — see the \`nucleus-verification-report\` artifact."
+            echo "    - Full results: \`nucleus-test-history\` artifact (tests/test_history.json)."
           fi
 
           echo

@@ -22,11 +22,11 @@ export async function openHistory(
     .get<string>("serverPath", "nucleus");
   const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 
-  let trendJson: string;
+  let historyJson: string;
   try {
     const { stdout } = await execFileAsync(cli, ["history", "--graph"], { cwd });
-    trendJson = stdout.trim() || "{}";
-    JSON.parse(trendJson); // validate before injecting
+    historyJson = stdout.trim() || "{}";
+    JSON.parse(historyJson); // validate before injecting
   } catch (err) {
     void vscode.window.showErrorMessage(
       `Nucleus: could not load history (${cli} history --graph): ${err}`
@@ -50,13 +50,13 @@ export async function openHistory(
     panel.onDidDispose(() => (panel = undefined), null, context.subscriptions);
   }
 
-  panel.webview.html = render(panel.webview, context.extensionUri, trendJson);
+  panel.webview.html = render(panel.webview, context.extensionUri, historyJson);
 }
 
 function render(
   webview: vscode.Webview,
   extensionUri: vscode.Uri,
-  trendJson: string
+  historyJson: string
 ): string {
   const script = webview.asWebviewUri(
     vscode.Uri.joinPath(extensionUri, "dist", "dashboard.js")
@@ -68,6 +68,7 @@ function render(
 
   // No live WebSocket in history mode, but the bundle still resolves one; keep
   // connect-src for parity so toggling to Trace works if a daemon is running.
+  // (historyJson is injected below.)
   const csp = [
     "default-src 'none'",
     `style-src ${webview.cspSource} 'unsafe-inline'`,
@@ -87,8 +88,8 @@ function render(
   </head>
   <body>
     <div id="root"></div>
-    <script nonce="${nonce}">window.NUCLEUS_TREND = JSON.parse(${JSON.stringify(
-      trendJson
+    <script nonce="${nonce}">window.NUCLEUS_HISTORY = JSON.parse(${JSON.stringify(
+      historyJson
     )});</script>
     <script nonce="${nonce}" src="${script}"></script>
   </body>

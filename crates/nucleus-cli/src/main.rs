@@ -7,7 +7,7 @@
 //! `trace` decodes ITM/SWO and streams events over a WebSocket.
 
 mod firmware;
-mod ledger;
+mod history;
 mod scaffold;
 
 use std::path::{Path, PathBuf};
@@ -104,39 +104,29 @@ enum Command {
         #[arg(long)]
         test: Option<String>,
     },
-    /// List recorded project versions (newest last) with per-backend test
-    /// results from the `.nucleus/` ledger.
+    /// List recorded test runs (oldest first) with per-run pass/fail counts,
+    /// from `tests/test_history.json`.
     History {
-        /// Project root containing the `.nucleus/` ledger (defaults to current
-        /// directory).
+        /// Project root containing `tests/test_history.json` (defaults to the
+        /// current directory).
         #[arg(default_value = ".")]
         path: PathBuf,
-        /// Emit the trend timeline as JSON (for the dashboard / export) instead
-        /// of the human table.
+        /// Emit the per-run pass/fail summary as JSON (for the dashboard /
+        /// export) instead of the human table.
         #[arg(long)]
         graph: bool,
-        /// Keep only the most recent N versions.
+        /// Keep only the most recent N runs.
         #[arg(long)]
         last: Option<usize>,
     },
-    /// Show full details for one recorded version: verdict, solved config, and
-    /// every per-backend test result.
+    /// Show every assertion result for one recorded run (defaults to the most
+    /// recent run).
     Show {
-        /// Version id (full or short hash prefix, e.g. `abc1234`).
-        hash: String,
-        /// Project root containing the `.nucleus/` ledger (defaults to current
-        /// directory).
-        #[arg(default_value = ".")]
-        path: PathBuf,
-    },
-    /// Emit a machine-checkable verification report (JSON) for a version: what
-    /// the verifier proved statically and what each backend proved at runtime.
-    Report {
-        /// Version id (full or short hash prefix). Defaults to the most recent
-        /// recorded version.
-        hash: Option<String>,
-        /// Project root containing the `.nucleus/` ledger (defaults to current
-        /// directory).
+        /// 1-based run number (as listed by `nucleus history`). Defaults to the
+        /// latest run.
+        run: Option<usize>,
+        /// Project root containing `tests/test_history.json` (defaults to the
+        /// current directory).
         #[arg(long, default_value = ".")]
         path: PathBuf,
     },
@@ -172,8 +162,7 @@ fn main() -> ExitCode {
             test,
         } => run_test(&path, backend, test.as_deref()),
         Command::History { path, graph, last } => run_history(&path, graph, last),
-        Command::Show { hash, path } => run_show(&path, &hash),
-        Command::Report { hash, path } => run_report(&path, hash.as_deref()),
+        Command::Show { run, path } => run_show(&path, run),
     }
 }
 
@@ -512,11 +501,9 @@ fn run_test(
 
     let mut any_failed = false;
 
-    // Find or create the ledger version for the built firmware; test outcomes
-    // get attached to it. `None` when there's no built firmware to hash (e.g. a
-    // scripted-only run) — the tests still run, they just aren't logged.
-    let version_hash = ledger::record_version(path);
-    let mut records: Vec<nucleus_ledger::TestRecord> = Vec::new();
+    // Every assertion's result this run, appended to tests/test_history.json at
+    // the end as one Run.
+    let mut entries: Vec<nucleus_history::TestEntry> = Vec::new();
 
     if !declarative.is_empty() {
         let elf = path.join("build/firmware");
@@ -562,7 +549,7 @@ fn run_test(
                     let outcomes = run_tests(backend.as_mut(), &declarative);
                     let _ = backend.finish();
                     for outcome in &outcomes {
-                        let (status_icon, ledger_status) = match outcome.status {
+                        let (status_icon, status) = match outcome.status {
                             TestStatus::Passed => ("PASS", "pass"),
                             TestStatus::Failed => ("FAIL", "fail"),
                             TestStatus::Skipped => ("SKIP", "skip"),
@@ -571,10 +558,10 @@ fn run_test(
                             "  {status_icon} {} [{kind:?}]: {}",
                             outcome.name, outcome.detail
                         );
-                        records.push(nucleus_ledger::TestRecord {
+                        entries.push(nucleus_history::TestEntry {
                             name: outcome.name.clone(),
                             backend: backend_label(kind).to_string(),
-                            status: ledger_status.to_string(),
+                            status: status.to_string(),
                             detail: outcome.detail.clone(),
                         });
                         if outcome.status == TestStatus::Failed {
@@ -626,7 +613,7 @@ fn run_test(
                     (false, format!("cargo test failed to launch: {e}"))
                 }
             };
-            records.push(nucleus_ledger::TestRecord {
+            entries.push(nucleus_history::TestEntry {
                 name: test.name.clone(),
                 backend: label.to_string(),
                 status: if passed { "pass" } else { "fail" }.to_string(),
@@ -635,10 +622,8 @@ fn run_test(
         }
     }
 
-    // Persist all collected outcomes onto the ledger version, if we have one.
-    if let Some(hash) = &version_hash {
-        ledger::attach_tests(path, hash, records);
-    }
+    // Append this run to tests/test_history.json (best-effort).
+    history::record_run(path, entries);
 
     if any_failed {
         ExitCode::FAILURE
@@ -647,121 +632,100 @@ fn run_test(
     }
 }
 
-/// `nucleus history`: list every recorded version with its verdict and a
-/// per-backend pass/total test summary. Exit `0` always (read-only report);
-/// an unreadable ledger is the only failure.
+/// `nucleus history`: list recorded test runs (oldest first) with per-run
+/// pass/fail/skip counts. `--graph` emits the JSON summary the dashboard draws.
+/// Exit `0` always (read-only); an unreadable history file is the only failure.
 fn run_history(path: &Path, graph: bool, last: Option<usize>) -> ExitCode {
-    use nucleus_ledger::{Ledger, Verdict};
+    use nucleus_history::TestHistory;
 
-    let ledger = match Ledger::load(path) {
-        Ok(l) => l,
+    let history = match TestHistory::load(path) {
+        Ok(h) => h,
         Err(err) => {
-            eprintln!("error: cannot read ledger: {err}");
+            eprintln!("error: cannot read test history: {err}");
             return ExitCode::FAILURE;
         }
     };
 
-    // `--graph` emits the deterministic trend JSON (the dashboard data source
-    // and export format). It prints `{ ... }` even for an empty ledger so
-    // consumers always get valid JSON.
+    // `--graph` emits the per-run summary JSON (the dashboard data source and
+    // export format). Always valid JSON, even for an empty history.
     if graph {
-        let trend = ledger.trend(last);
-        match serde_json::to_string_pretty(&trend) {
+        let summary = history.summary(last);
+        match serde_json::to_string_pretty(&summary) {
             Ok(json) => {
                 println!("{json}");
                 return ExitCode::SUCCESS;
             }
             Err(err) => {
-                eprintln!("error: cannot serialize trend: {err}");
+                eprintln!("error: cannot serialize summary: {err}");
                 return ExitCode::FAILURE;
             }
         }
     }
 
-    if ledger.versions.is_empty() {
-        println!("no versions recorded yet — run `nucleus build` then `nucleus test`.");
+    if history.runs.is_empty() {
+        println!("no test runs recorded yet — run `nucleus test`.");
         return ExitCode::SUCCESS;
     }
 
     let start = match last {
-        Some(n) if n < ledger.versions.len() => ledger.versions.len() - n,
+        Some(n) if n < history.runs.len() => history.runs.len() - n,
         _ => 0,
     };
-    for version in &ledger.versions[start..] {
-        let verdict = match &version.verdict {
-            Verdict::Approved => "approved".to_string(),
-            Verdict::Conflicts(c) => format!("{} conflict(s)", c.len()),
-        };
-        let summary = Ledger::test_summary(version);
-        let tests = if summary.is_empty() {
-            "no tests".to_string()
-        } else {
-            summary
-                .iter()
-                .map(|(backend, (pass, total))| format!("{backend} {pass}/{total}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
+    for (i, run) in history.runs.iter().enumerate().skip(start) {
         println!(
-            "{}  {}  {:<14}  {}",
-            version.short(),
-            fmt_timestamp(version.timestamp),
-            verdict,
-            tests
+            "#{:<3} {}  {} passed, {} failed, {} skipped",
+            i + 1,
+            fmt_timestamp(run.timestamp),
+            run.passed(),
+            run.failed(),
+            run.skipped()
         );
     }
     ExitCode::SUCCESS
 }
 
-/// `nucleus show <hash>`: full detail for one version. Exit `1` if the hash
-/// can't be resolved to exactly one version.
-fn run_show(path: &Path, query: &str) -> ExitCode {
-    use nucleus_ledger::{Ledger, Verdict};
+/// `nucleus show [run]`: every assertion result for one run (1-based, as listed
+/// by `nucleus history`; defaults to the latest). Exit `1` if the run number is
+/// out of range or no runs exist.
+fn run_show(path: &Path, run: Option<usize>) -> ExitCode {
+    use nucleus_history::TestHistory;
 
-    let ledger = match Ledger::load(path) {
-        Ok(l) => l,
+    let history = match TestHistory::load(path) {
+        Ok(h) => h,
         Err(err) => {
-            eprintln!("error: cannot read ledger: {err}");
+            eprintln!("error: cannot read test history: {err}");
             return ExitCode::FAILURE;
         }
     };
 
-    let version = match ledger.find(query) {
-        Ok(v) => v,
-        Err(err) => {
-            eprintln!("error: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    println!("version  {}", version.hash);
-    println!("short    {}", version.short());
-    println!("recorded {}", fmt_timestamp(version.timestamp));
-    println!("family   {}", version.family);
-    println!("toolchain {}", version.toolchain);
-    match &version.verdict {
-        Verdict::Approved => println!("verdict  approved (no conflicts)"),
-        Verdict::Conflicts(conflicts) => {
-            println!("verdict  {} conflict(s):", conflicts.len());
-            for c in conflicts {
-                println!("    - {c}");
-            }
-        }
+    if history.runs.is_empty() {
+        eprintln!("error: no test runs recorded — run `nucleus test` first.");
+        return ExitCode::FAILURE;
     }
-    println!(
-        "solved   {}",
-        if version.solved_config.is_some() {
-            "auto-routed (see artifacts)"
-        } else {
-            "config used as written"
-        }
-    );
 
-    if version.tests.is_empty() {
-        println!("tests    none recorded");
+    // Default to the latest run; otherwise the given 1-based index.
+    let index = run.unwrap_or(history.runs.len());
+    let Some(entry) = index.checked_sub(1).and_then(|i| history.runs.get(i)) else {
+        eprintln!(
+            "error: no run #{index} (history has {} run(s)).",
+            history.runs.len()
+        );
+        return ExitCode::FAILURE;
+    };
+
+    println!("run      #{index}");
+    println!("recorded {}", fmt_timestamp(entry.timestamp));
+    println!(
+        "summary  {} passed, {} failed, {} skipped",
+        entry.passed(),
+        entry.failed(),
+        entry.skipped()
+    );
+    if entry.tests.is_empty() {
+        println!("tests    none");
     } else {
         println!("tests:");
-        for t in &version.tests {
+        for t in &entry.tests {
             let icon = match t.status.as_str() {
                 "pass" => "PASS",
                 "fail" => "FAIL",
@@ -771,51 +735,6 @@ fn run_show(path: &Path, query: &str) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
-}
-
-/// `nucleus report [hash]`: emit the machine-checkable verification report
-/// (JSON) for a version — what was proven statically and on which backend.
-/// Defaults to the most recent recorded version. Exit `1` if the ledger is
-/// empty or the hash can't be resolved.
-fn run_report(path: &Path, query: Option<&str>) -> ExitCode {
-    use nucleus_ledger::{Ledger, VerificationReport};
-
-    let ledger = match Ledger::load(path) {
-        Ok(l) => l,
-        Err(err) => {
-            eprintln!("error: cannot read ledger: {err}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let version = match query {
-        Some(q) => match ledger.find(q) {
-            Ok(v) => v,
-            Err(err) => {
-                eprintln!("error: {err}");
-                return ExitCode::FAILURE;
-            }
-        },
-        None => match ledger.versions.last() {
-            Some(v) => v,
-            None => {
-                eprintln!("error: no versions recorded — run `nucleus build` first.");
-                return ExitCode::FAILURE;
-            }
-        },
-    };
-
-    let report = VerificationReport::for_version(version);
-    match serde_json::to_string_pretty(&report) {
-        Ok(json) => {
-            println!("{json}");
-            ExitCode::SUCCESS
-        }
-        Err(err) => {
-            eprintln!("error: cannot serialize report: {err}");
-            ExitCode::FAILURE
-        }
-    }
 }
 
 /// Format unix-epoch seconds as `YYYY-MM-DD HH:MM:SSZ` (UTC), without pulling in

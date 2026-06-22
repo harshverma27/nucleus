@@ -9,7 +9,7 @@ members = [
     "crates/nucleus-trace",
     "crates/nucleus-hil",
     "crates/nucleus-test-sdk",
-    "crates/nucleus-ledger",
+    "crates/nucleus-history",
 ]
 
 [workspace.package]
