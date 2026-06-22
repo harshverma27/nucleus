@@ -6,3 +6,8 @@ tasks.txt
 
 # mdBook build output
 /docs/book
+
+# Local user configuration
+.claude/
+CLAUDE.md
+xtask/
