@@ -11,3 +11,6 @@ tasks.txt
 .claude/
 CLAUDE.md
 xtask/
+
+# Internal planning documents
+docs/superpowers/plans/
