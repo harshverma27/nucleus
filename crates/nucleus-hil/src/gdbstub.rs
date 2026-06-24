@@ -136,11 +136,26 @@ impl GdbStub {
             }
             body.push(byte[0]);
         }
-        // Consume the two-byte checksum trailer; we don't verify it — a bad
-        // checksum still yields a typed Protocol error downstream if the body
-        // doesn't parse, which is the behavior that matters.
+        // Verify the two-byte checksum trailer. A bit-flip can turn valid hex
+        // into still-valid hex of the wrong value (e.g. "deadbeef" ->
+        // "deadbeee"), which decode_hex/parsing happily accepts — only the
+        // checksum catches that corruption.
         let mut checksum = [0u8; 2];
         with_timeout(self.conn.read_exact(&mut checksum)).await?;
+        let expected: u8 = body.iter().fold(0u8, |acc, b| acc.wrapping_add(*b));
+        let received = std::str::from_utf8(&checksum)
+            .ok()
+            .and_then(|s| u8::from_str_radix(s, 16).ok());
+        if received != Some(expected) {
+            // Nak so a spec-compliant stub knows to retransmit; this client
+            // doesn't itself retry, it just refuses to trust the bad packet.
+            self.conn.write_all(b"-").await?;
+            self.conn.flush().await?;
+            return Err(HilError::Protocol(format!(
+                "checksum mismatch: expected {expected:02x}, got {:?}",
+                String::from_utf8_lossy(&checksum)
+            )));
+        }
         // Ack the reply.
         self.conn.write_all(b"+").await?;
         self.conn.flush().await?;
@@ -202,6 +217,32 @@ mod tests {
     #[tokio::test]
     async fn malformed_reply_is_a_protocol_error_not_a_panic() {
         let addr = mock_server("not-hex!!").await;
+        let mut stub = GdbStub::connect(&addr.to_string()).await.unwrap();
+        let result = stub.read_memory(0x4002_0010, 4).await;
+        assert!(matches!(result, Err(HilError::Protocol(_))));
+    }
+
+    #[tokio::test]
+    async fn bad_checksum_is_a_protocol_error_not_silently_trusted() {
+        // Simulates a bit-flip: the body is still valid even-length hex
+        // ("deadbeee" instead of "deadbeef"), but the checksum trailer is
+        // computed for the *original* body, so it no longer matches.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 256];
+            let _ = sock.read(&mut buf).await.unwrap();
+            sock.write_all(b"+").await.unwrap();
+
+            let original = "deadbeef";
+            let checksum: u8 = original.bytes().fold(0u8, |acc, b| acc.wrapping_add(b));
+            let corrupted = "deadbeee";
+            let framed = format!("${corrupted}#{checksum:02x}");
+            sock.write_all(framed.as_bytes()).await.unwrap();
+            let _ = sock.read(&mut buf).await;
+        });
+
         let mut stub = GdbStub::connect(&addr.to_string()).await.unwrap();
         let result = stub.read_memory(0x4002_0010, 4).await;
         assert!(matches!(result, Err(HilError::Protocol(_))));
