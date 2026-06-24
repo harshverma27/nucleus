@@ -196,7 +196,12 @@ fn run_trace(
         Ok(text) => match nucleus_compiler::config::parse(&text) {
             Ok(cfg) => (
                 VariableMap::from_config(&cfg.trace),
-                cfg.device.clock_hz.unwrap_or(180_000_000) as u32,
+                // No PLL is configured on a freshly flashed board until the
+                // firmware's own init runs, so the core is still on its reset
+                // clock (HSI, 16 MHz on F4) — matches
+                // `HardwareBackend::start`'s default for the same
+                // `openocd_enable` call (nucleus-hil/src/hardware/mod.rs).
+                cfg.device.clock_hz.unwrap_or(16_000_000) as u32,
                 cfg.trace.swo_freq.unwrap_or(2_000_000) as u32,
             ),
             Err(err) => {
@@ -209,7 +214,7 @@ fn run_trace(
                 "warning: {} not found; tracing port-0 logs only (no named variables).",
                 config.display()
             );
-            (VariableMap::new(), 180_000_000, 2_000_000)
+            (VariableMap::new(), 16_000_000, 2_000_000)
         }
     };
 

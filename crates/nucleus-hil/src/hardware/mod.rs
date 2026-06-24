@@ -368,8 +368,8 @@ impl Backend for HardwareBackend {
 
         // No PLL is configured on a freshly flashed board until the
         // firmware's own init runs, so the core is still on its reset clock
-        // (HSI, 16 MHz on F4) — a different default than the CLI's
-        // already-configured-project assumption of 180 MHz.
+        // (HSI, 16 MHz on F4). `nucleus trace`'s run_trace (nucleus-cli/src/
+        // main.rs) defaults the same way for the identical openocd_enable call.
         let cpu_hz = check_report.config.device.clock_hz.unwrap_or(16_000_000) as u32;
         let swo_hz = check_report.config.trace.swo_freq.unwrap_or(2_000_000) as u32;
 
