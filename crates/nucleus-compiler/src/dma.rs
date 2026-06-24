@@ -94,6 +94,19 @@ fn slot_label(slot: Slot) -> String {
 /// returning one [`Conflict::DmaCollision`] per contested stream in a fixed,
 /// deterministic order. Called by the solver after the clock-tree validation.
 pub fn validate(config: &Config, map: &DmaMap) -> Vec<Conflict> {
+    resolve(config, map).1
+}
+
+/// Resolve every `dma`-opted-in `(peripheral, direction)` request to the slot
+/// the greedy assignment gives it, alongside the same [`Conflict::DmaCollision`]
+/// list [`validate`] returns. Shared by the solver (which only needs the
+/// conflicts) and [`crate::codegen`] (which needs the resolved slots to emit
+/// `HAL_DMA_Init` — codegen only runs on a config [`validate`] already passed,
+/// so every request here is unambiguously assigned).
+pub fn resolve(
+    config: &Config,
+    map: &DmaMap,
+) -> (std::collections::BTreeMap<(String, Direction), Slot>, Vec<Conflict>) {
     // 1. Collect every requested (peripheral, direction) in BTreeMap peripheral
     //    order, so the greedy assignment below is deterministic.
     let peripherals: Vec<String> = config
@@ -132,8 +145,8 @@ pub fn validate(config: &Config, map: &DmaMap) -> Vec<Conflict> {
     // Contested streams: (controller, stream) -> (holder request index, the new
     // contender request index). One entry per stream, recorded once.
     let mut collisions: BTreeMap<(Controller, u8), (usize, usize)> = BTreeMap::new();
-    // request index -> assigned (controller, stream) (when it found a free slot).
-    let mut assigned: Vec<Option<(Controller, u8)>> = vec![None; requests.len()];
+    // request index -> assigned slot (when it found a free stream).
+    let mut assigned: Vec<Option<Slot>> = vec![None; requests.len()];
 
     for (ri, req) in requests.iter().enumerate() {
         let candidates = map.candidates(&peripherals[req.peripheral_idx], req.direction);
@@ -143,7 +156,7 @@ pub fn validate(config: &Config, map: &DmaMap) -> Vec<Conflict> {
         match free {
             Some(slot) => {
                 occupied.insert((slot.controller, slot.stream), ri);
-                assigned[ri] = Some((slot.controller, slot.stream));
+                assigned[ri] = Some(*slot);
             }
             None => {
                 // Every candidate stream is taken. Report against the first
@@ -180,7 +193,15 @@ pub fn validate(config: &Config, map: &DmaMap) -> Vec<Conflict> {
         });
     }
 
-    out
+    let mut assigned_map = std::collections::BTreeMap::new();
+    for (ri, req) in requests.iter().enumerate() {
+        if let Some(slot) = assigned[ri] {
+            let peripheral = peripherals[req.peripheral_idx].clone();
+            assigned_map.insert((peripheral, req.direction), slot);
+        }
+    }
+
+    (assigned_map, out)
 }
 
 /// A candidate slot for `req` whose stream is free (not in `occupied`), if any —

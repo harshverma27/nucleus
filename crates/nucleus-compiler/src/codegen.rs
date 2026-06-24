@@ -20,6 +20,8 @@
 use std::fmt::Write;
 use std::str::FromStr;
 
+use nucleus_db::dma::{Direction, Slot};
+use nucleus_db::irq::IrqMap;
 use nucleus_db::{Database, Pin};
 
 use crate::config::{Config, Peripheral};
@@ -45,6 +47,25 @@ struct Lowered {
     kind: Kind,
     /// Resolved pin uses: `(pin, af, signal)`.
     pins: Vec<(Pin, u8, &'static str)>,
+    /// NVIC vector name(s) + preempt priority, when `irq = true` and the
+    /// family models a vector for this peripheral.
+    irq: Option<IrqInit>,
+    /// Resolved DMA stream(s), when `dma` is set and the solver assigned a
+    /// slot for that direction. Empty for `Kind::Tim` — TIM's DMA handle
+    /// field is the `hdma[]` array, not the simple `hdmatx`/`hdmarx` pair the
+    /// other kinds use, so it's out of scope here.
+    dma: Vec<DmaInit>,
+}
+
+struct IrqInit {
+    vectors: &'static [&'static str],
+    priority: i64,
+}
+
+struct DmaInit {
+    direction: Direction,
+    slot: Slot,
+    priority: i64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -57,10 +78,18 @@ enum Kind {
 
 /// Generate `nucleus_config.h` and `nucleus_init.c` for `config`.
 pub fn generate(config: &Config, db: &Database) -> Generated {
+    let irq_map = crate::irq_map_for(&config.device.family);
+    let dma_map = crate::dma_map_for(&config.device.family);
+    // Codegen only runs on a config the solver already validated clean (see
+    // `nucleus-cli`'s `generate_sources`), so re-running the same greedy
+    // assignment here lands on the exact slots `dma::validate` would have
+    // approved — there is nothing left to collide.
+    let (dma_assigned, _) = crate::dma::resolve(config, &dma_map);
+
     let lowered: Vec<Lowered> = config
         .peripherals
         .iter()
-        .filter_map(|(instance, table)| lower(instance, table, db))
+        .filter_map(|(instance, table)| lower(instance, table, db, &irq_map, &dma_assigned))
         .collect();
 
     Generated {
@@ -80,7 +109,13 @@ fn kind_of(instance: &str) -> Option<Kind> {
     }
 }
 
-fn lower(instance: &str, table: &Peripheral, db: &Database) -> Option<Lowered> {
+fn lower(
+    instance: &str,
+    table: &Peripheral,
+    db: &Database,
+    irq_map: &IrqMap,
+    dma_assigned: &std::collections::BTreeMap<(String, Direction), Slot>,
+) -> Option<Lowered> {
     let kind = kind_of(instance)?;
     let roles = model::roles_for(instance)?;
     let name = model::peripheral_name(instance);
@@ -113,6 +148,45 @@ fn lower(instance: &str, table: &Peripheral, db: &Database) -> Option<Lowered> {
         }
     }
 
+    let irq = match table.0.get("irq").and_then(toml::Value::as_bool) {
+        Some(true) => {
+            let vectors = irq_map.vectors(&name);
+            if vectors.is_empty() {
+                None
+            } else {
+                let priority = table
+                    .0
+                    .get("irq_priority")
+                    .and_then(toml::Value::as_integer)
+                    .unwrap_or(0);
+                Some(IrqInit { vectors, priority })
+            }
+        }
+        _ => None,
+    };
+
+    let dma_priority = table
+        .0
+        .get("dma_priority")
+        .and_then(toml::Value::as_integer)
+        .unwrap_or(0);
+    let dma = if kind == Kind::Tim {
+        Vec::new()
+    } else {
+        [Direction::Tx, Direction::Rx]
+            .into_iter()
+            .filter_map(|direction| {
+                dma_assigned
+                    .get(&(name.clone(), direction))
+                    .map(|&slot| DmaInit {
+                        direction,
+                        slot,
+                        priority: dma_priority,
+                    })
+            })
+            .collect()
+    };
+
     Some(Lowered {
         config_type: format!("Nucleus_{name}_Config"),
         handle: format!("{handle_prefix}{digits}"),
@@ -120,6 +194,8 @@ fn lower(instance: &str, table: &Peripheral, db: &Database) -> Option<Lowered> {
         instance: name,
         kind,
         pins,
+        irq,
+        dma,
     })
 }
 
@@ -142,7 +218,15 @@ fn config_header(lowered: &[Lowered]) -> String {
             let _ = writeln!(s, "    uint32_t {field};");
         }
         let _ = writeln!(s, "}} {};", p.config_type);
-        let _ = writeln!(s, "extern {} {};\n", p.handle_type, p.handle);
+        let _ = writeln!(s, "extern {} {};", p.handle_type, p.handle);
+        for d in &p.dma {
+            let _ = writeln!(
+                s,
+                "extern DMA_HandleTypeDef {};",
+                dma_handle_name(p, d.direction)
+            );
+        }
+        s.push('\n');
     }
 
     s.push_str(
@@ -165,6 +249,9 @@ fn init_source(config: &Config, lowered: &[Lowered]) -> String {
     // Handle definitions.
     for p in lowered {
         let _ = writeln!(s, "{} {};", p.handle_type, p.handle);
+        for d in &p.dma {
+            let _ = writeln!(s, "DMA_HandleTypeDef {};", dma_handle_name(p, d.direction));
+        }
     }
     s.push('\n');
 
@@ -177,11 +264,14 @@ fn init_source(config: &Config, lowered: &[Lowered]) -> String {
     s.push_str("    GPIO_InitTypeDef GPIO_InitStruct = {0};\n\n");
 
     emit_gpio_clock_enables(&mut s, lowered);
+    emit_dma_clock_enables(&mut s, lowered);
 
     for p in lowered {
         let _ = writeln!(s, "    /* ---- {} ---- */", p.instance);
         emit_gpio_config(&mut s, p);
         emit_peripheral_init(&mut s, p);
+        emit_dma_init(&mut s, p);
+        emit_irq_init(&mut s, p);
         s.push('\n');
     }
 
@@ -274,6 +364,93 @@ fn emit_gpio_config(s: &mut String, p: &Lowered) {
             p.instance
         );
         let _ = writeln!(s, "    HAL_GPIO_Init(GPIO{port}, &GPIO_InitStruct);");
+    }
+}
+
+/// DMA handle variable name, e.g. `hdma_usart2_rx`.
+fn dma_handle_name(p: &Lowered, direction: Direction) -> String {
+    format!(
+        "hdma_{}_{}",
+        p.instance.to_ascii_lowercase(),
+        direction.name().to_ascii_lowercase()
+    )
+}
+
+fn dma_priority_macro(priority: i64) -> &'static str {
+    match priority {
+        0 => "DMA_PRIORITY_LOW",
+        1 => "DMA_PRIORITY_MEDIUM",
+        2 => "DMA_PRIORITY_HIGH",
+        _ => "DMA_PRIORITY_VERY_HIGH",
+    }
+}
+
+fn emit_dma_clock_enables(s: &mut String, lowered: &[Lowered]) {
+    let mut controllers: Vec<&'static str> = lowered
+        .iter()
+        .flat_map(|p| p.dma.iter().map(|d| d.slot.controller.name()))
+        .collect();
+    controllers.sort_unstable();
+    controllers.dedup();
+    if controllers.is_empty() {
+        return;
+    }
+    s.push_str("    /* DMA controller clocks */\n");
+    for controller in controllers {
+        let _ = writeln!(s, "    __HAL_RCC_{controller}_CLK_ENABLE();");
+    }
+    s.push('\n');
+}
+
+/// Emits `HAL_DMA_Init` + `__HAL_LINKDMA` for every resolved DMA stream on
+/// `p`. Field name on the parent handle (`hdmatx`/`hdmarx`) is the same
+/// across UART/SPI/I2C `_HandleTypeDef`s, which is why `Kind::Tim` (whose
+/// `TIM_HandleTypeDef` instead exposes an `hdma[]` array) is excluded in
+/// [`lower`].
+fn emit_dma_init(s: &mut String, p: &Lowered) {
+    for d in &p.dma {
+        let handle = dma_handle_name(p, d.direction);
+        let stream = format!("{}_Stream{}", d.slot.controller.name(), d.slot.stream);
+        let channel = format!("DMA_CHANNEL_{}", d.slot.channel);
+        let direction_macro = match d.direction {
+            Direction::Tx => "DMA_MEMORY_TO_PERIPH",
+            Direction::Rx => "DMA_PERIPH_TO_MEMORY",
+        };
+        let field = match d.direction {
+            Direction::Tx => "hdmatx",
+            Direction::Rx => "hdmarx",
+        };
+
+        let _ = writeln!(s, "    {handle}.Instance = {stream};");
+        let _ = writeln!(s, "    {handle}.Init.Channel = {channel};");
+        let _ = writeln!(s, "    {handle}.Init.Direction = {direction_macro};");
+        for (field_name, val) in [
+            ("PeriphInc", "DMA_PINC_DISABLE"),
+            ("MemInc", "DMA_MINC_ENABLE"),
+            ("PeriphDataAlignment", "DMA_PDATAALIGN_BYTE"),
+            ("MemDataAlignment", "DMA_MDATAALIGN_BYTE"),
+            ("Mode", "DMA_NORMAL"),
+            ("Priority", dma_priority_macro(d.priority)),
+        ] {
+            let _ = writeln!(s, "    {handle}.Init.{field_name} = {val};");
+        }
+        let _ = writeln!(s, "    HAL_DMA_Init(&{handle});");
+        let _ = writeln!(s, "    __HAL_LINKDMA(&{}, {field}, {handle});", p.handle);
+    }
+}
+
+/// Emits `HAL_NVIC_SetPriority` + `HAL_NVIC_EnableIRQ` for every vector the
+/// family models for `p`'s peripheral. I2Cx's two vectors (`_EV`/`_ER`) both
+/// get the peripheral's single configured `irq_priority`.
+fn emit_irq_init(s: &mut String, p: &Lowered) {
+    let Some(irq) = &p.irq else { return };
+    for vector in irq.vectors {
+        let _ = writeln!(
+            s,
+            "    HAL_NVIC_SetPriority({vector}_IRQn, {}, 0);",
+            irq.priority
+        );
+        let _ = writeln!(s, "    HAL_NVIC_EnableIRQ({vector}_IRQn);");
     }
 }
 
@@ -499,5 +676,76 @@ duty_resolution_bits = 16
         let g = gen("[device]\nfamily = \"STM32F446RE\"\n");
         assert!(g.init_c.contains("void Nucleus_Init(void)"));
         assert!(g.config_h.contains("void Nucleus_Init(void);"));
+    }
+
+    #[test]
+    fn irq_true_emits_nvic_enable_and_priority() {
+        let text = "[peripherals.usart2]\ntx=\"PA2\"\nrx=\"PA3\"\nirq=true\nirq_priority=5\n";
+        let g = gen(text);
+        assert!(g.init_c.contains("HAL_NVIC_SetPriority(USART2_IRQn, 5, 0);"));
+        assert!(g.init_c.contains("HAL_NVIC_EnableIRQ(USART2_IRQn);"));
+    }
+
+    #[test]
+    fn irq_false_emits_no_nvic_calls() {
+        let text = "[peripherals.usart2]\ntx=\"PA2\"\nrx=\"PA3\"\nirq=false\n";
+        let g = gen(text);
+        assert!(!g.init_c.contains("HAL_NVIC"));
+    }
+
+    #[test]
+    fn i2c_irq_emits_both_event_and_error_vectors() {
+        let text = "[peripherals.i2c1]\nsda=\"PB9\"\nscl=\"PB8\"\nirq=true\n";
+        let g = gen(text);
+        assert!(g.init_c.contains("HAL_NVIC_EnableIRQ(I2C1_EV_IRQn);"));
+        assert!(g.init_c.contains("HAL_NVIC_EnableIRQ(I2C1_ER_IRQn);"));
+    }
+
+    #[test]
+    fn dma_true_emits_hal_dma_init_and_link_for_both_directions() {
+        let text = "[peripherals.usart2]\ntx=\"PA2\"\nrx=\"PA3\"\ndma=true\n";
+        let g = gen(text);
+        assert!(g.init_c.contains("HAL_DMA_Init(&hdma_usart2_tx);"));
+        assert!(g.init_c.contains("HAL_DMA_Init(&hdma_usart2_rx);"));
+        assert!(g.init_c.contains("__HAL_LINKDMA(&huart2, hdmatx, hdma_usart2_tx);"));
+        assert!(g.init_c.contains("__HAL_LINKDMA(&huart2, hdmarx, hdma_usart2_rx);"));
+        assert!(g.init_c.contains("hdma_usart2_tx.Init.Direction = DMA_MEMORY_TO_PERIPH;"));
+        assert!(g.init_c.contains("hdma_usart2_rx.Init.Direction = DMA_PERIPH_TO_MEMORY;"));
+        assert!(g.config_h.contains("extern DMA_HandleTypeDef hdma_usart2_tx;"));
+    }
+
+    #[test]
+    fn dma_rx_only_emits_single_stream() {
+        let text = "[peripherals.usart2]\ntx=\"PA2\"\nrx=\"PA3\"\ndma=[\"rx\"]\n";
+        let g = gen(text);
+        assert!(g.init_c.contains("HAL_DMA_Init(&hdma_usart2_rx);"));
+        assert!(!g.init_c.contains("hdma_usart2_tx"));
+    }
+
+    #[test]
+    fn dma_assigns_resolved_stream_and_channel() {
+        // USART2_RX is DMA1 stream 5 channel 4 on the F446 (matches dma.rs's
+        // model row), so codegen's own greedy resolve must land here too.
+        let text = "[peripherals.usart2]\ntx=\"PA2\"\nrx=\"PA3\"\ndma=[\"rx\"]\n";
+        let g = gen(text);
+        assert!(g.init_c.contains("hdma_usart2_rx.Instance = DMA1_Stream5;"));
+        assert!(g.init_c.contains("hdma_usart2_rx.Init.Channel = DMA_CHANNEL_4;"));
+        assert!(g.init_c.contains("__HAL_RCC_DMA1_CLK_ENABLE();"));
+    }
+
+    #[test]
+    fn tim_does_not_emit_dma_init() {
+        // TIM's DMA handle field is the `hdma[]` array, out of scope here —
+        // opting in must not crash or emit a bogus hdmatx/hdmarx link.
+        let text = "[peripherals.tim2]\nchannel1=\"PA0\"\ndma=true\n";
+        let g = gen(text);
+        assert!(!g.init_c.contains("HAL_DMA_Init"));
+    }
+
+    #[test]
+    fn no_irq_or_dma_opt_in_emits_neither() {
+        let g = gen(EXAMPLE);
+        assert!(!g.init_c.contains("HAL_NVIC"));
+        assert!(!g.init_c.contains("HAL_DMA_Init"));
     }
 }
