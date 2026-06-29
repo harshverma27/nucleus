@@ -452,6 +452,47 @@ pub fn validate(config: &Config, tree: &ClockTree) -> Vec<Conflict> {
         }
     }
 
+    // 6. Per-peripheral PWM timing reachability (TIM frequency_hz /
+    // duty_resolution_bits). Mirrors `codegen::tim_timing`'s `timer_clk`
+    // approximation (`[device].clock_hz`, not the resolved APB timer rate)
+    // exactly, so a config that passes here never hits the PSC underflow
+    // that function would otherwise saturate to 0 silently.
+    for (instance, table) in &config.peripherals {
+        let name = crate::model::peripheral_name(instance);
+        if !name.starts_with("TIM") {
+            continue;
+        }
+        let Some(freq) = table
+            .0
+            .get("frequency_hz")
+            .and_then(toml::Value::as_integer)
+        else {
+            continue;
+        };
+        if freq <= 0 {
+            continue;
+        }
+        let bits = table
+            .0
+            .get("duty_resolution_bits")
+            .and_then(toml::Value::as_integer)
+            .unwrap_or(16)
+            .clamp(1, 31) as u32;
+        let arr_plus_one: u64 = 1u64 << bits;
+        let timer_clk = config.device.clock_hz.unwrap_or(180_000_000).max(1);
+        let divisor = (freq as u64) * arr_plus_one;
+        if divisor > timer_clk {
+            let actual_hz = timer_clk as f64 / arr_plus_one as f64;
+            out.push(cc(
+                &name,
+                format!(
+                    "{freq} Hz at {bits}-bit duty resolution is unachievable: a {} MHz timer clock divided by {arr_plus_one} (2^{bits} from duty_resolution_bits) yields PSC < 1, so the generated PWM would silently run at ~{actual_hz:.3} Hz instead of {freq} Hz — lower duty_resolution_bits or raise frequency_hz",
+                    mhz(timer_clk as u32),
+                ),
+            ));
+        }
+    }
+
     out
 }
 
@@ -677,6 +718,34 @@ mod tests {
         // 115200 from the default 45 MHz PCLK1 is reachable within 2%.
         let conflicts = validate_toml(
             "[peripherals.usart2]\ntx=\"PA2\"\nrx=\"PA3\"\nbaud=115200\n",
+            &f446(),
+        );
+        assert_eq!(conflicts, vec![]);
+    }
+
+    #[test]
+    fn pwm_timing_unachievable_is_a_clock_constraint() {
+        // Issue #29: 1 Hz at 31-bit duty resolution needs a divisor of 2^31,
+        // which exceeds the default 180 MHz timer clock — codegen's
+        // `tim_timing` would otherwise saturate PSC to 0 with no diagnostic.
+        let conflicts = validate_toml(
+            "[peripherals.tim2]\nchannel1=\"PA0\"\nfrequency_hz=1\nduty_resolution_bits=31\n",
+            &f446(),
+        );
+        assert_eq!(conflicts.len(), 1, "got {conflicts:?}");
+        assert!(matches!(
+            &conflicts[0],
+            Conflict::ClockConstraint { node, reason }
+                if node == "TIM2" && reason.contains("unachievable") && reason.contains("1 Hz")
+        ));
+    }
+
+    #[test]
+    fn reachable_pwm_timing_is_clean() {
+        // 1 kHz at 16-bit duty resolution from the default 180 MHz timer
+        // clock is comfortably achievable.
+        let conflicts = validate_toml(
+            "[peripherals.tim2]\nchannel1=\"PA0\"\nfrequency_hz=1000\nduty_resolution_bits=16\n",
             &f446(),
         );
         assert_eq!(conflicts, vec![]);
