@@ -70,6 +70,7 @@ pub fn collect(
 ) -> ObservationTrace {
     let mut checkpoints = Vec::new();
     let deadline = Instant::now() + total_timeout;
+    let mut translator = Translator::new(vars.clone());
 
     loop {
         if Instant::now() >= deadline {
@@ -77,7 +78,7 @@ pub fn collect(
         }
         match backend.await_itm_event(timeout_per_event) {
             Ok(Some(event)) => {
-                let decoded = decode(vars, &event);
+                let decoded = decode(&mut translator, &event);
                 checkpoints.push(Checkpoint {
                     itm_event: event,
                     decoded,
@@ -91,12 +92,13 @@ pub fn collect(
     ObservationTrace { checkpoints }
 }
 
-/// Decode `event` against `vars` by replaying it through the same
-/// [`Translator`] the trace daemon uses, returning the first decoded
-/// variable (a configured port produces exactly one). `None` for port-0 log
-/// lines and ports with no `[trace.variables]` entry.
-fn decode(vars: &VariableMap, event: &ItmEvent) -> Option<(String, Value)> {
-    let mut translator = Translator::new(vars.clone());
+/// Decode `event` by replaying it through `translator` — the same
+/// [`Translator`] instance across the whole observation trace, so its
+/// per-stream state (the multi-packet port-0 log-line buffer) persists
+/// between events exactly as it does for the trace daemon. Returns the
+/// first decoded variable (a configured port produces exactly one). `None`
+/// for port-0 log lines and ports with no `[trace.variables]` entry.
+fn decode(translator: &mut Translator, event: &ItmEvent) -> Option<(String, Value)> {
     let packet = Packet::Instrumentation {
         port: event.port,
         data: event.data.clone(),
@@ -290,14 +292,39 @@ mod tests {
     fn decode_finds_configured_variable() {
         let mut vars = VariableMap::new();
         vars.insert(1, "speed", nucleus_trace::translate::VarType::U32);
-        let decoded = decode(&vars, &event(1, &[42, 0, 0, 0]));
+        let mut translator = Translator::new(vars);
+        let decoded = decode(&mut translator, &event(1, &[42, 0, 0, 0]));
         assert_eq!(decoded, Some(("speed".to_string(), Value::from(42))));
     }
 
     #[test]
     fn decode_returns_none_for_unconfigured_port() {
-        let vars = VariableMap::new();
-        let decoded = decode(&vars, &event(0, b"log line"));
+        let mut translator = Translator::new(VariableMap::new());
+        let decoded = decode(&mut translator, &event(0, b"log line"));
         assert_eq!(decoded, None);
+    }
+
+    #[test]
+    fn decode_preserves_log_buffer_across_events_when_translator_is_reused() {
+        // The documented normal case: a log message arrives as consecutive
+        // port-0 packets. decode() must not reset the Translator's
+        // multi-packet log-line buffer between events the way the old
+        // per-call `Translator::new` did — calling decode() against the same
+        // translator for "hello " then "world\n" must reassemble one
+        // "hello world" line, not lose "hello " and reassemble just "world".
+        let mut translator = Translator::new(VariableMap::new());
+        assert_eq!(decode(&mut translator, &event(0, b"hello ")), None);
+        decode(&mut translator, &event(0, b"wor")); // still no newline
+        let packet = Packet::Instrumentation {
+            port: 0,
+            data: b"ld\n".to_vec(),
+        };
+        let events = translator.translate(&packet);
+        assert_eq!(
+            events,
+            vec![nucleus_trace::translate::TraceEvent::Log {
+                message: "hello world".to_string()
+            }]
+        );
     }
 }
