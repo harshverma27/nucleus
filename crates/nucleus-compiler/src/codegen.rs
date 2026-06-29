@@ -545,6 +545,12 @@ fn spi_mode(mode: i64) -> (&'static str, &'static str) {
 /// Resolve a PWM timer's `(Prescaler, Period)` from the requested frequency and
 /// duty resolution. Uses the device `clock_hz` as the timer clock estimate
 /// (an approximation — full clock-tree solving is explicitly out of scope).
+///
+/// `crate::clocks::validate` runs this same `timer_clk` approximation against
+/// `frequency_hz`/`duty_resolution_bits` before codegen ever runs, raising a
+/// `Conflict::ClockConstraint` for any combination that would underflow PSC
+/// here — so by the time this function runs, `divisor <= timer_clk` always
+/// holds and the `saturating_sub` below never actually saturates.
 fn tim_timing(config: &Config, table: &Peripheral) -> (u32, u32) {
     let bits = table
         .0
