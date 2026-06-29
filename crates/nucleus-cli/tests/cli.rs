@@ -687,6 +687,32 @@ fn test_with_valid_block_and_present_firmware_reaches_backend_start() {
 }
 
 #[test]
+fn lockstep_with_present_firmware_runs_both_backends_concurrently_without_hanging() {
+    // Regression test for the two HIL backends being started/collected on
+    // their own threads (issue 34) instead of one after another: this must
+    // still reach both backends and return without deadlocking or panicking
+    // in the join, regardless of which backend's thread finishes first.
+    let proj = TempProject::new();
+    std::fs::write(
+        proj.path().join("stm32.toml"),
+        "[device]\nfamily = \"STM32F446RE\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(proj.path().join("build")).unwrap();
+    std::fs::write(proj.path().join("build/firmware"), b"").unwrap();
+    std::fs::write(proj.path().join("build/firmware.bin"), b"").unwrap();
+
+    let out = nucleus(&["lockstep".as_ref(), proj.path().as_os_str()]);
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("Run `nucleus build` first"),
+        "expected the firmware-found gate to pass, got stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
 fn init_rejects_unknown_board() {
     let proj = TempProject::new();
     let out = nucleus(&[
