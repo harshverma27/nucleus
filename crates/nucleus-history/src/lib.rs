@@ -107,12 +107,25 @@ impl TestHistory {
 
     /// Persist under `project_root/tests/test_history.json`, creating the
     /// `tests/` directory if needed. Pretty-printed so it diffs cleanly in git.
+    ///
+    /// Writes to a uniquely-named temp file in the same directory and renames
+    /// it into place, so concurrent or interrupted saves can never leave
+    /// behind a partially-written file for [`TestHistory::load`] to trip over
+    /// — `load` only ever sees the old file or a complete new one.
     pub fn save(&self, project_root: &Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(project_root.join(HISTORY_DIR))?;
+        let dir = project_root.join(HISTORY_DIR);
+        std::fs::create_dir_all(&dir)?;
         let mut json = serde_json::to_string_pretty(self)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         json.push('\n');
-        std::fs::write(Self::path(project_root), json)
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let tmp = dir.join(format!("{HISTORY_FILE}.tmp.{}.{nanos}", std::process::id()));
+        std::fs::write(&tmp, json)?;
+        std::fs::rename(&tmp, Self::path(project_root))
     }
 
     /// Append a run.
@@ -225,6 +238,54 @@ mod tests {
         assert_eq!(final_h.runs.len(), 2);
         assert_eq!(final_h.runs[0].timestamp, 1);
         assert_eq!(final_h.runs[1].tests[0].status, "fail");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn save_leaves_no_tmp_file_behind() {
+        let dir = tempdir();
+        let mut h = TestHistory::default();
+        h.push(run(1, vec![entry("a", "qemu", "pass")]));
+        h.save(&dir).unwrap();
+
+        let leftovers: Vec<_> = std::fs::read_dir(dir.join(HISTORY_DIR))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(leftovers, vec![std::ffi::OsString::from(HISTORY_FILE)]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn concurrent_saves_never_leave_invalid_json_for_load() {
+        // Two threads racing save() on the same history file: load() must
+        // always see either the file from before this test or one fully
+        // valid write from one of the two threads — never a half-written
+        // one, regardless of who wins the race.
+        let dir = tempdir();
+        let dir1 = dir.clone();
+        let dir2 = dir.clone();
+
+        let t1 = std::thread::spawn(move || {
+            for i in 0..50 {
+                let mut h = TestHistory::default();
+                h.push(run(i, vec![entry("a", "qemu", "pass")]));
+                h.save(&dir1).unwrap();
+            }
+        });
+        let t2 = std::thread::spawn(move || {
+            for i in 0..50 {
+                let mut h = TestHistory::default();
+                h.push(run(i, vec![entry("b", "hardware", "fail")]));
+                h.save(&dir2).unwrap();
+            }
+        });
+        t1.join().unwrap();
+        t2.join().unwrap();
+
+        // Whichever write landed last, it must parse cleanly.
+        TestHistory::load(&dir).unwrap();
         std::fs::remove_dir_all(&dir).ok();
     }
 
