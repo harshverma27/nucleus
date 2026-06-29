@@ -64,6 +64,18 @@ pub fn database_for(family: &str) -> Result<Database, UnknownFamily> {
     }
 }
 
+/// [`database_for`]'s fallback resolution: the [`Database`] to validate
+/// against for `family` (falling back to the F446RE on an unknown family),
+/// paired with the [`UnknownFamily`] warning if it fell back. One call
+/// instead of two separate `database_for` calls, so the warning and the
+/// database it describes can never desync.
+fn resolve_family(family: &str) -> (Database, Option<UnknownFamily>) {
+    match database_for(family) {
+        Ok(db) => (db, None),
+        Err(err) => (Database::f446re(), Some(err)),
+    }
+}
+
 /// The clock-tree model to validate against for `family`, mirroring
 /// [`database_for`]. Unknown families fall back to the F446RE so the clock check
 /// degrades the same way the pin check does (never a panic).
@@ -125,8 +137,7 @@ pub fn check(text: &str) -> Result<CheckReport, ParseError> {
 /// Like [`check`], but also reports an unsupported `[device].family`.
 pub fn check_family(text: &str) -> Result<(CheckReport, Option<UnknownFamily>), ParseError> {
     let config = config::parse(text)?;
-    let family_warning = database_for(&config.device.family).err();
-    let db = database_for(&config.device.family).unwrap_or_else(|_| Database::f446re());
+    let (db, family_warning) = resolve_family(&config.device.family);
     let conflicts = solver::solve(&config, &db);
     Ok((CheckReport { config, conflicts }, family_warning))
 }
@@ -150,8 +161,7 @@ pub struct RouteReport {
 /// formatting, since only the newly-solved pins are spliced in).
 pub fn route_family(text: &str) -> Result<(RouteReport, Option<UnknownFamily>), ParseError> {
     let config = config::parse(text)?;
-    let family_warning = database_for(&config.device.family).err();
-    let db = database_for(&config.device.family).unwrap_or_else(|_| Database::f446re());
+    let (db, family_warning) = resolve_family(&config.device.family);
 
     let outcome = match router::route(&config, &db) {
         Ok(assignment) => {
