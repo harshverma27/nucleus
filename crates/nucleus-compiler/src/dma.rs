@@ -106,7 +106,10 @@ pub fn validate(config: &Config, map: &DmaMap) -> Vec<Conflict> {
 pub fn resolve(
     config: &Config,
     map: &DmaMap,
-) -> (std::collections::BTreeMap<(String, Direction), Slot>, Vec<Conflict>) {
+) -> (
+    std::collections::BTreeMap<(String, Direction), Slot>,
+    Vec<Conflict>,
+) {
     // 1. Collect every requested (peripheral, direction) in BTreeMap peripheral
     //    order, so the greedy assignment below is deterministic.
     let peripherals: Vec<String> = config

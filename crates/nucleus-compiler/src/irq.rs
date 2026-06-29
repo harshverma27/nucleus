@@ -198,7 +198,10 @@ fn exti_priority_inversions(config: &Config) -> Vec<Conflict> {
             let Some(true) = table.0.get("irq").and_then(toml::Value::as_bool) else {
                 continue;
             };
-            let Some(irq_priority) = table.0.get("irq_priority").and_then(toml::Value::as_integer)
+            let Some(irq_priority) = table
+                .0
+                .get("irq_priority")
+                .and_then(toml::Value::as_integer)
             else {
                 continue;
             };
