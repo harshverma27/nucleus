@@ -1,6 +1,6 @@
 //! The IRQ/NVIC verifier (Nucleus v2 milestone M3).
 //!
-//! Turns the "did I wire interrupts correctly?" question into three concrete
+//! Turns the "did I wire interrupts correctly?" question into four concrete
 //! checks against the family's [`nucleus_db::irq::IrqMap`]:
 //!
 //! 1. **Unhandled IRQ** — a peripheral table opts into `irq = true` for a
@@ -8,10 +8,16 @@
 //! 2. **EXTI collision** — two `[[exti]]` entries land on the same EXTI line
 //!    (0–15), which is shared across all eight GPIO ports, so only one pin per
 //!    line can actually trigger that line's vector.
-//! 3. **Priority inversion** — a peripheral whose DMA request is *less*
-//!    urgent (numerically larger `dma_priority`) than its own IRQ
+//! 3. **Priority inversion (DMA/IRQ)** — a peripheral whose DMA request is
+//!    *less* urgent (numerically larger `dma_priority`) than its own IRQ
 //!    (`irq_priority`), which can starve the DMA completion interrupt behind
 //!    the peripheral's own ISR.
+//! 4. **Priority inversion (EXTI/IRQ)** — an `[[exti]]` entry whose
+//!    `priority` is *less* urgent than the `irq_priority` of a peripheral
+//!    sharing the same physical pin. EXTI taps the GPIO input register
+//!    regardless of AF mode, so a pin can be both a peripheral signal and an
+//!    EXTI source at once; a mismatched priority can starve the edge
+//!    interrupt the peripheral depends on.
 //!
 //! Everything here is **pure and synchronous** (config + model → conflicts),
 //! mirroring [`crate::dma::validate`] and [`crate::clocks::validate`]: all
@@ -64,6 +70,7 @@ pub fn validate(config: &Config, map: &IrqMap) -> Vec<Conflict> {
     out.extend(unhandled_irqs(config, map));
     out.extend(exti_collisions(config));
     out.extend(priority_inversions(config));
+    out.extend(exti_priority_inversions(config));
 
     out
 }
@@ -166,6 +173,58 @@ fn priority_inversions(config: &Config) -> Vec<Conflict> {
                 ),
                 Severity::Warning,
             ));
+        }
+    }
+    out
+}
+
+/// **EXTI priority inversion**: an `[[exti]]` entry's `priority` that is
+/// numerically less urgent (larger) than the `irq_priority` of a peripheral
+/// whose pin role names the same physical pin as the EXTI entry — EXTI taps
+/// the GPIO input register regardless of AF mode, so a pin can simultaneously
+/// be a peripheral signal and an EXTI source. A less-urgent EXTI priority
+/// means the edge interrupt the peripheral relies on can be starved behind
+/// less important work.
+fn exti_priority_inversions(config: &Config) -> Vec<Conflict> {
+    let mut out = Vec::new();
+    for entry in &config.exti {
+        let Some(exti_priority) = entry.priority else {
+            continue;
+        };
+        let Ok(exti_pin) = Pin::from_str(&entry.pin) else {
+            continue;
+        };
+        for (instance, table) in &config.peripherals {
+            let Some(true) = table.0.get("irq").and_then(toml::Value::as_bool) else {
+                continue;
+            };
+            let Some(irq_priority) = table.0.get("irq_priority").and_then(toml::Value::as_integer)
+            else {
+                continue;
+            };
+            let Some(roles) = crate::model::roles_for(instance) else {
+                continue;
+            };
+            let shares_pin = roles.iter().any(|role| {
+                table
+                    .pin_str(role.key)
+                    .and_then(|v| Pin::from_str(v).ok())
+                    .is_some_and(|p| p == exti_pin)
+            });
+            if !shares_pin {
+                continue;
+            }
+            if i64::from(exti_priority) > irq_priority {
+                let peripheral = crate::model::peripheral_name(instance);
+                out.push(ic(
+                    peripheral.clone(),
+                    format!(
+                        "EXTI priority {exti_priority} on {} is less urgent than {peripheral}'s IRQ priority {irq_priority} on the same pin (priority inversion)",
+                        entry.pin
+                    ),
+                    Severity::Warning,
+                ));
+            }
         }
     }
     out
@@ -292,6 +351,59 @@ mod tests {
     #[test]
     fn priority_inversion_skipped_when_one_key_absent() {
         let text = "[peripherals.usart2]\ntx=\"PA2\"\nrx=\"PA3\"\ndma=true\ndma_priority=5\n";
+        assert_eq!(validate_toml(text, &f446()), vec![]);
+    }
+
+    #[test]
+    fn exti_priority_inversion_fires_when_exti_less_urgent_on_shared_pin() {
+        // EXTI on PA3 (priority 5) shares its pin with USART2's RX, whose
+        // IRQ priority is 1 (more urgent) — the EXTI is less urgent.
+        let text = "[peripherals.usart2]\ntx=\"PA2\"\nrx=\"PA3\"\nirq=true\nirq_priority=1\n\n[[exti]]\npin=\"PA3\"\npriority=5\n";
+        let conflicts = validate_toml(text, &f446());
+        assert_eq!(conflicts.len(), 1, "got {conflicts:?}");
+        match &conflicts[0] {
+            Conflict::IrqConflict {
+                node,
+                severity,
+                reason,
+            } => {
+                assert_eq!(node, "USART2");
+                assert_eq!(*severity, Severity::Warning);
+                assert!(reason.contains('5') && reason.contains('1'), "{reason}");
+                assert!(reason.contains("PA3"), "{reason}");
+            }
+            other => panic!("expected IrqConflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn exti_priority_not_inverted_on_shared_pin_is_clean() {
+        let text = "[peripherals.usart2]\ntx=\"PA2\"\nrx=\"PA3\"\nirq=true\nirq_priority=5\n\n[[exti]]\npin=\"PA3\"\npriority=1\n";
+        assert_eq!(validate_toml(text, &f446()), vec![]);
+    }
+
+    #[test]
+    fn exti_priority_inversion_skipped_when_pins_differ() {
+        // EXTI is on PB0, unrelated to USART2's PA2/PA3 pins.
+        let text = "[peripherals.usart2]\ntx=\"PA2\"\nrx=\"PA3\"\nirq=true\nirq_priority=1\n\n[[exti]]\npin=\"PB0\"\npriority=5\n";
+        assert_eq!(validate_toml(text, &f446()), vec![]);
+    }
+
+    #[test]
+    fn exti_priority_inversion_skipped_when_no_irq_priority_set() {
+        let text = "[peripherals.usart2]\ntx=\"PA2\"\nrx=\"PA3\"\nirq=true\n\n[[exti]]\npin=\"PA3\"\npriority=5\n";
+        assert_eq!(validate_toml(text, &f446()), vec![]);
+    }
+
+    #[test]
+    fn exti_priority_inversion_skipped_when_peripheral_irq_not_enabled() {
+        let text = "[peripherals.usart2]\ntx=\"PA2\"\nrx=\"PA3\"\nirq_priority=1\n\n[[exti]]\npin=\"PA3\"\npriority=5\n";
+        assert_eq!(validate_toml(text, &f446()), vec![]);
+    }
+
+    #[test]
+    fn exti_priority_inversion_skipped_when_exti_priority_absent() {
+        let text = "[peripherals.usart2]\ntx=\"PA2\"\nrx=\"PA3\"\nirq=true\nirq_priority=1\n\n[[exti]]\npin=\"PA3\"\n";
         assert_eq!(validate_toml(text, &f446()), vec![]);
     }
 
