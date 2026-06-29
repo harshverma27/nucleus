@@ -713,28 +713,55 @@ fn run_lockstep(path: &Path, explain: bool) -> ExitCode {
     let per_event = std::time::Duration::from_secs(3);
     let total = std::time::Duration::from_secs(5);
 
-    let mut backends: Vec<Box<dyn Backend>> = vec![
+    let backends: Vec<Box<dyn Backend + Send>> = vec![
         Box::new(QemuBackend::default()),
         Box::new(HardwareBackend::default()),
     ];
 
+    // Each backend runs on its own thread so HardwareBackend::start()'s ~1.8s
+    // flash wait and QemuBackend::collect()'s up-to-5s poll overlap instead of
+    // serializing — back-to-back, the two legs roughly double wall-clock for
+    // every `nucleus lockstep` invocation. Joined in `backends` order below so
+    // `traces` keeps the original (QEMU, hardware) ordering regardless of
+    // which thread actually finishes first.
+    let handles: Vec<_> = backends
+        .into_iter()
+        .map(|mut backend| {
+            let firmware = firmware.clone();
+            let check_report = check_report.clone();
+            let vars = vars.clone();
+            std::thread::spawn(move || {
+                let kind = backend.name();
+                match backend.start(&firmware, &check_report) {
+                    Err(err @ HilError::ToolMissing(_)) => {
+                        println!("skipped: {kind:?} ({err})");
+                        Ok(None)
+                    }
+                    Err(err) => {
+                        eprintln!("error: {kind:?} failed to start: {err}");
+                        Err(())
+                    }
+                    Ok(()) => {
+                        let trace = lockstep::collect(backend.as_mut(), &vars, per_event, total);
+                        let _ = backend.finish();
+                        Ok(Some((kind, trace)))
+                    }
+                }
+            })
+        })
+        .collect();
+
     let mut traces = Vec::new();
-    for backend in backends.iter_mut() {
-        let kind = backend.name();
-        match backend.start(&firmware, &check_report) {
-            Err(err @ HilError::ToolMissing(_)) => {
-                println!("skipped: {kind:?} ({err})");
-            }
-            Err(err) => {
-                eprintln!("error: {kind:?} failed to start: {err}");
-                return ExitCode::FAILURE;
-            }
-            Ok(()) => {
-                let trace = lockstep::collect(backend.as_mut(), &vars, per_event, total);
-                let _ = backend.finish();
-                traces.push((kind, trace));
-            }
+    let mut start_failed = false;
+    for handle in handles {
+        match handle.join().expect("backend thread panicked") {
+            Ok(Some(pair)) => traces.push(pair),
+            Ok(None) => {}
+            Err(()) => start_failed = true,
         }
+    }
+    if start_failed {
+        return ExitCode::FAILURE;
     }
 
     if traces.len() < 2 {
