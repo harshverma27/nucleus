@@ -688,7 +688,9 @@ duty_resolution_bits = 16
     fn irq_true_emits_nvic_enable_and_priority() {
         let text = "[peripherals.usart2]\ntx=\"PA2\"\nrx=\"PA3\"\nirq=true\nirq_priority=5\n";
         let g = gen(text);
-        assert!(g.init_c.contains("HAL_NVIC_SetPriority(USART2_IRQn, 5, 0);"));
+        assert!(g
+            .init_c
+            .contains("HAL_NVIC_SetPriority(USART2_IRQn, 5, 0);"));
         assert!(g.init_c.contains("HAL_NVIC_EnableIRQ(USART2_IRQn);"));
     }
 
@@ -713,11 +715,21 @@ duty_resolution_bits = 16
         let g = gen(text);
         assert!(g.init_c.contains("HAL_DMA_Init(&hdma_usart2_tx);"));
         assert!(g.init_c.contains("HAL_DMA_Init(&hdma_usart2_rx);"));
-        assert!(g.init_c.contains("__HAL_LINKDMA(&huart2, hdmatx, hdma_usart2_tx);"));
-        assert!(g.init_c.contains("__HAL_LINKDMA(&huart2, hdmarx, hdma_usart2_rx);"));
-        assert!(g.init_c.contains("hdma_usart2_tx.Init.Direction = DMA_MEMORY_TO_PERIPH;"));
-        assert!(g.init_c.contains("hdma_usart2_rx.Init.Direction = DMA_PERIPH_TO_MEMORY;"));
-        assert!(g.config_h.contains("extern DMA_HandleTypeDef hdma_usart2_tx;"));
+        assert!(g
+            .init_c
+            .contains("__HAL_LINKDMA(&huart2, hdmatx, hdma_usart2_tx);"));
+        assert!(g
+            .init_c
+            .contains("__HAL_LINKDMA(&huart2, hdmarx, hdma_usart2_rx);"));
+        assert!(g
+            .init_c
+            .contains("hdma_usart2_tx.Init.Direction = DMA_MEMORY_TO_PERIPH;"));
+        assert!(g
+            .init_c
+            .contains("hdma_usart2_rx.Init.Direction = DMA_PERIPH_TO_MEMORY;"));
+        assert!(g
+            .config_h
+            .contains("extern DMA_HandleTypeDef hdma_usart2_tx;"));
     }
 
     #[test]
@@ -735,7 +747,9 @@ duty_resolution_bits = 16
         let text = "[peripherals.usart2]\ntx=\"PA2\"\nrx=\"PA3\"\ndma=[\"rx\"]\n";
         let g = gen(text);
         assert!(g.init_c.contains("hdma_usart2_rx.Instance = DMA1_Stream5;"));
-        assert!(g.init_c.contains("hdma_usart2_rx.Init.Channel = DMA_CHANNEL_4;"));
+        assert!(g
+            .init_c
+            .contains("hdma_usart2_rx.Init.Channel = DMA_CHANNEL_4;"));
         assert!(g.init_c.contains("__HAL_RCC_DMA1_CLK_ENABLE();"));
     }
 
