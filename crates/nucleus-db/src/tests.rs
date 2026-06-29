@@ -23,6 +23,19 @@ fn pin_round_trips_through_display() {
     assert_eq!(pin.to_string(), "PB9");
 }
 
+#[test]
+#[should_panic(expected = "out of range")]
+fn pin_new_rejects_out_of_range_number_like_from_str_does() {
+    Pin::new(Port::A, 16);
+}
+
+#[test]
+fn pin_new_accepts_the_full_valid_range() {
+    for number in 0..=15 {
+        Pin::new(Port::A, number);
+    }
+}
+
 // --- Forward lookup (the Phase 1 exit-criteria test) ---------------------
 
 #[test]

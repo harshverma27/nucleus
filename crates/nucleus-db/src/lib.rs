@@ -67,7 +67,11 @@ pub struct Pin {
 }
 
 impl Pin {
+    /// # Panics
+    /// Panics if `number` is not a valid pin number (0–15), the same bound
+    /// [`Pin::from_str`](FromStr::from_str) enforces.
     pub const fn new(port: Port, number: u8) -> Pin {
+        assert!(number <= 15, "pin number out of range (expected 0-15)");
         Pin { port, number }
     }
 }
