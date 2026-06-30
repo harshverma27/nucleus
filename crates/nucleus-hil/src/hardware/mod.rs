@@ -259,20 +259,41 @@ impl HardwareBackend {
         }
         let runtime = self.runtime.as_ref().expect("runtime set in start()");
         let telnet_addr = format!("127.0.0.1:{}", self.telnet_port);
-        let result: Result<u32, HilError> = runtime.block_on(async {
-            let mut conn = TcpStream::connect(&telnet_addr).await?;
-            telnet_write_line(&mut conn, "halt").await?;
-            // Brief settle so the core is actually halted before the read —
-            // `mdw` on a still-running core can race the halt and read stale
-            // or in-flight state.
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            let marker = format!("0x{addr:08x}:");
-            telnet_write_line(&mut conn, &format!("mdw 0x{addr:08x}")).await?;
-            let reply = read_until_value(&mut conn, &marker).await?;
-            telnet_write_line(&mut conn, "resume").await?;
-            parse_mdw_word(&reply, addr)
-        });
-        result.map_err(|err| self.record_failure(err))
+        // `read_result` and `resume_result` are tracked separately: an `mdw`
+        // failure (e.g. `read_until_value`'s 2s deadline) must not skip
+        // `resume` via an early `?` — that would leave the target halted for
+        // the rest of the run (issue #48). `resume` is always attempted once
+        // `halt` has actually landed.
+        let (read_result, resume_result): (Result<String, HilError>, Result<(), HilError>) =
+            runtime.block_on(async {
+                let mut conn = match TcpStream::connect(&telnet_addr).await {
+                    Ok(conn) => conn,
+                    Err(err) => return (Err(HilError::Io(err)), Ok(())),
+                };
+                if let Err(err) = telnet_write_line(&mut conn, "halt").await {
+                    return (Err(err), Ok(()));
+                }
+                // Brief settle so the core is actually halted before the
+                // read — `mdw` on a still-running core can race the halt
+                // and read stale or in-flight state.
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                let marker = format!("0x{addr:08x}:");
+                let read_result = async {
+                    telnet_write_line(&mut conn, &format!("mdw 0x{addr:08x}")).await?;
+                    read_until_value(&mut conn, &marker).await
+                }
+                .await;
+                let resume_result = telnet_write_line(&mut conn, "resume").await;
+                (read_result, resume_result)
+            });
+        if let Err(err) = resume_result {
+            self.record_failure(err);
+        }
+        let reply = match read_result {
+            Ok(reply) => reply,
+            Err(err) => return Err(self.record_failure(err)),
+        };
+        parse_mdw_word(&reply, addr).map_err(|err| self.record_failure(err))
     }
 
     /// Write one 32-bit word `value` at `addr` over OpenOCD's telnet console:
@@ -656,6 +677,70 @@ channel1 = "PA5"
     fn mdw_reply_without_the_address_marker_is_a_protocol_error() {
         let result = parse_mdw_word("> \r\nInvalid command\r\n", 0x4002_0010);
         assert!(matches!(result, Err(HilError::Protocol(_))));
+    }
+
+    /// Regression for issue #48: `read_until_value` failing used to skip
+    /// `resume` entirely via an early `?`, leaving the target halted in
+    /// OpenOCD for the rest of the run. `resume` must still be sent even
+    /// when the `mdw` read itself fails.
+    #[test]
+    fn read_memory_attempts_resume_even_when_the_mdw_read_fails() {
+        use std::io::Read;
+        use std::net::{Shutdown, TcpListener};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+
+            // TCP doesn't preserve message boundaries, so independent
+            // single-shot reads can coalesce multiple writes (e.g. "halt"
+            // and "mdw...") into one read or split one write across several
+            // — accumulate into a shared buffer and check for each phase's
+            // marker rather than assuming one read == one command.
+            let mut acc = String::new();
+            let mut buf = [0u8; 256];
+
+            // Wait for "halt\r\n".
+            while !acc.contains("halt") {
+                let n = sock.read(&mut buf).unwrap();
+                assert!(n > 0, "connection closed before halt was observed");
+                acc.push_str(&String::from_utf8_lossy(&buf[..n]));
+            }
+
+            // Wait for the "mdw 0x...\r\n" request, then half-close our
+            // write side so `read_until_value` sees EOF immediately
+            // (instead of waiting out its 2s deadline) without severing the
+            // connection — the read half stays open so we can still observe
+            // whether `resume` gets sent afterward.
+            while !acc.contains("mdw") {
+                let n = sock.read(&mut buf).unwrap();
+                assert!(n > 0, "connection closed before mdw was observed");
+                acc.push_str(&String::from_utf8_lossy(&buf[..n]));
+            }
+            sock.shutdown(Shutdown::Write).unwrap();
+
+            // The client cannot send "resume" before observing the EOF
+            // triggered by the shutdown above, which only happens after the
+            // mdw marker was already seen — so this phase is causally safe.
+            while !acc.contains("resume") {
+                let n = sock.read(&mut buf).unwrap();
+                assert!(n > 0, "expected a resume command despite the failed read");
+                acc.push_str(&String::from_utf8_lossy(&buf[..n]));
+            }
+        });
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut backend = HardwareBackend::default();
+        backend.started = true;
+        backend.runtime = Some(runtime);
+        backend.telnet_port = addr.port();
+
+        let result = backend.read_memory(0x4002_0010);
+        assert!(matches!(result, Err(HilError::Protocol(_))));
+        assert!(backend.failure.is_some());
+
+        server.join().unwrap();
     }
 
     #[test]
