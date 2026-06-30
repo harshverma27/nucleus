@@ -219,14 +219,23 @@ impl Backend for QemuBackend {
         let runtime = self.runtime.as_ref().expect("runtime set in start()");
         // QEMU's gdbstub only answers `m` queries while halted (see
         // GdbStub::interrupt's doc comment) — pause briefly, read, resume,
-        // so the firmware keeps running between observations.
-        let result = runtime.block_on(async {
-            stub.interrupt().await?;
-            let r = stub.read_memory(addr, 4).await;
-            stub.continue_execution().await?;
-            r
+        // so the firmware keeps running between observations. Resume is
+        // tracked separately from the read: a resume failure must not
+        // discard an already-successful read via `?` (issue #47), and a
+        // failed resume still needs `record_failure` so the run is reported
+        // `Failed` instead of silently leaving the target halted.
+        let (read_result, resume_result) = runtime.block_on(async {
+            if let Err(err) = stub.interrupt().await {
+                return (Err(err), Ok(()));
+            }
+            let read_result = stub.read_memory(addr, 4).await;
+            let resume_result = resume_with_retry(stub).await;
+            (read_result, resume_result)
         });
-        let bytes = match result {
+        if let Err(err) = resume_result {
+            self.record_failure(err);
+        }
+        let bytes = match read_result {
             Ok(bytes) => bytes,
             Err(err) => return Err(self.record_failure(err)),
         };
@@ -242,13 +251,18 @@ impl Backend for QemuBackend {
             .as_mut()
             .ok_or_else(|| HilError::Protocol("backend not started".to_string()))?;
         let runtime = self.runtime.as_ref().expect("runtime set in start()");
-        let result = runtime.block_on(async {
-            stub.interrupt().await?;
-            let r = stub.write_memory(addr, &value.to_le_bytes()).await;
-            stub.continue_execution().await?;
-            r
+        let (write_result, resume_result) = runtime.block_on(async {
+            if let Err(err) = stub.interrupt().await {
+                return (Err(err), Ok(()));
+            }
+            let write_result = stub.write_memory(addr, &value.to_le_bytes()).await;
+            let resume_result = resume_with_retry(stub).await;
+            (write_result, resume_result)
         });
-        result.map_err(|err| self.record_failure(err))
+        if let Err(err) = resume_result {
+            self.record_failure(err);
+        }
+        write_result.map_err(|err| self.record_failure(err))
     }
 
     /// Drains `pending` (events already decoded but not yet returned) before
@@ -363,6 +377,17 @@ impl Drop for QemuBackend {
         if let Some(path) = self.itm_log_path.take() {
             let _ = std::fs::remove_file(path);
         }
+    }
+}
+
+/// Resume the target after a halted read/write, retrying once. Guards
+/// against a transient GDB-RSP blip (e.g. a TCP hiccup) on `continue_execution`
+/// permanently leaving the target halted, which would otherwise make every
+/// subsequent `interrupt()` in the run fail or hang (issue #47).
+async fn resume_with_retry(stub: &mut GdbStub) -> Result<(), HilError> {
+    match stub.continue_execution().await {
+        Ok(()) => Ok(()),
+        Err(_) => stub.continue_execution().await,
     }
 }
 
@@ -513,5 +538,190 @@ channel1 = "PA5"
 
         let bytes = result.expect("memory read over gdbstub");
         assert_eq!(bytes.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn resume_with_retry_recovers_after_one_transient_failure() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 64];
+            // First "c" attempt: ack with a bad byte to force a transient
+            // failure (mirrors a TCP blip rather than a hard disconnect).
+            let _ = sock.read(&mut buf).await.unwrap();
+            sock.write_all(b"-").await.unwrap();
+            // Retry attempt: ack properly.
+            let _ = sock.read(&mut buf).await.unwrap();
+            sock.write_all(b"+").await.unwrap();
+        });
+
+        let mut stub = GdbStub::connect(&addr.to_string()).await.unwrap();
+        let result = resume_with_retry(&mut stub).await;
+        assert!(
+            result.is_ok(),
+            "the retry should recover from a single transient failure, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_with_retry_fails_after_two_consecutive_failures() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 64];
+            for _ in 0..2 {
+                let _ = sock.read(&mut buf).await.unwrap();
+                sock.write_all(b"-").await.unwrap();
+            }
+        });
+
+        let mut stub = GdbStub::connect(&addr.to_string()).await.unwrap();
+        let result = resume_with_retry(&mut stub).await;
+        assert!(
+            result.is_err(),
+            "two consecutive resume failures must not be silently treated as success"
+        );
+    }
+
+    /// Regression for issue #47: a resume that never succeeds used to be
+    /// indistinguishable from a successful run, because `continue_execution()
+    /// .await?` discarded the already-successful read via early-return. The
+    /// read value must still reach the caller, and the run must still be
+    /// reported `Failed`.
+    #[test]
+    fn read_mem32_preserves_a_successful_read_even_when_resume_never_succeeds() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+
+            // interrupt(): client sends the raw 0x03 byte, expects a
+            // stop-reply packet, then auto-acks it with '+'.
+            let mut byte = [0u8; 1];
+            sock.read_exact(&mut byte).unwrap();
+            let stop_body = "S05";
+            let checksum: u8 = stop_body.bytes().fold(0u8, |a, b| a.wrapping_add(b));
+            sock.write_all(format!("${stop_body}#{checksum:02x}").as_bytes())
+                .unwrap();
+            let mut ack = [0u8; 1];
+            sock.read_exact(&mut ack).unwrap();
+
+            // read_memory: ack the `m` request, then send a valid reply.
+            let mut buf = [0u8; 256];
+            let _ = sock.read(&mut buf).unwrap();
+            sock.write_all(b"+").unwrap();
+            // Hex bytes are decoded then read via `u32::from_le_bytes`, so
+            // this wire order yields 0xdeadbeef.
+            let reply = "efbeadde";
+            let checksum: u8 = reply.bytes().fold(0u8, |a, b| a.wrapping_add(b));
+            sock.write_all(format!("${reply}#{checksum:02x}").as_bytes())
+                .unwrap();
+            let mut ack2 = [0u8; 1];
+            sock.read_exact(&mut ack2).unwrap();
+
+            // continue_execution: bad-ack both attempts (the original and
+            // the retry) so resume never succeeds.
+            for _ in 0..2 {
+                let n = sock.read(&mut buf).unwrap();
+                assert!(n > 0, "expected a continue_execution attempt");
+                sock.write_all(b"-").unwrap();
+            }
+        });
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let stub = runtime
+            .block_on(GdbStub::connect(&addr.to_string()))
+            .unwrap();
+
+        let mut backend = QemuBackend::default();
+        backend.stub = Some(stub);
+        backend.runtime = Some(runtime);
+
+        let result = backend.read_mem32(0x2000_0000);
+        assert_eq!(
+            result.unwrap(),
+            0xdeadbeef,
+            "a successful read must reach the caller even when resume fails"
+        );
+        assert!(
+            backend.failure.is_some(),
+            "a resume that never succeeds must still be recorded so finish() reports Failed"
+        );
+
+        server.join().unwrap();
+    }
+
+    /// Same regression as the read case, for `write_mem32`: a successful
+    /// write must still be reported `Ok` even when resume never succeeds —
+    /// the resume failure is recorded via `record_failure` (so `finish()`
+    /// reports `Failed`) rather than discarding the write's own outcome.
+    #[test]
+    fn write_mem32_records_failure_when_resume_never_succeeds() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+
+            let mut byte = [0u8; 1];
+            sock.read_exact(&mut byte).unwrap();
+            let stop_body = "S05";
+            let checksum: u8 = stop_body.bytes().fold(0u8, |a, b| a.wrapping_add(b));
+            sock.write_all(format!("${stop_body}#{checksum:02x}").as_bytes())
+                .unwrap();
+            let mut ack = [0u8; 1];
+            sock.read_exact(&mut ack).unwrap();
+
+            // write_memory: ack the `M` request, then reply "OK".
+            let mut buf = [0u8; 256];
+            let _ = sock.read(&mut buf).unwrap();
+            sock.write_all(b"+").unwrap();
+            let reply = "OK";
+            let checksum: u8 = reply.bytes().fold(0u8, |a, b| a.wrapping_add(b));
+            sock.write_all(format!("${reply}#{checksum:02x}").as_bytes())
+                .unwrap();
+            let mut ack2 = [0u8; 1];
+            sock.read_exact(&mut ack2).unwrap();
+
+            for _ in 0..2 {
+                let n = sock.read(&mut buf).unwrap();
+                assert!(n > 0, "expected a continue_execution attempt");
+                sock.write_all(b"-").unwrap();
+            }
+        });
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let stub = runtime
+            .block_on(GdbStub::connect(&addr.to_string()))
+            .unwrap();
+
+        let mut backend = QemuBackend::default();
+        backend.stub = Some(stub);
+        backend.runtime = Some(runtime);
+
+        let result = backend.write_mem32(0x2000_0000, 0x12345678);
+        assert!(
+            result.is_ok(),
+            "a successful write must reach the caller even when resume fails"
+        );
+        assert!(
+            backend.failure.is_some(),
+            "a resume that never succeeds must still be recorded so finish() reports Failed"
+        );
+
+        server.join().unwrap();
     }
 }
