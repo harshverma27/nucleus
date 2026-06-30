@@ -229,6 +229,24 @@ impl ClockTree {
             _ => 1,
         }
     }
+
+    /// `base` with `source` removed from the modeled oscillator set, as if a
+    /// family's pack data never described it. Lets callers (the M1 clock
+    /// solver) exercise the "this family's model has a gap" path on demand,
+    /// since the two hand-seeded families both model all four oscillators —
+    /// not meant for production family data.
+    pub fn without_oscillator(base: ClockTree, source: Oscillator) -> ClockTree {
+        let kept: Vec<OscillatorSpec> = base
+            .oscillators
+            .iter()
+            .copied()
+            .filter(|o| o.source != source)
+            .collect();
+        ClockTree {
+            oscillators: Box::leak(kept.into_boxed_slice()),
+            ..base
+        }
+    }
 }
 
 mod data {
