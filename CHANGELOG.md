@@ -10,6 +10,53 @@ notes. This file is the curated, human-readable history.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-30
+
+### Fixed
+- **Divide-by-zero panic in clock-tree solver.** `default_effective()` divided by
+  `vco_in` without guarding against zero; a family model with no HSE oscillator
+  panicked at runtime instead of surfacing a solver diagnostic. Now returns
+  `Result` and maps `vco_in == 0` to `ResolveError::ZeroDivider`.
+- **`PinToggles` assertion always tested the wrong pin.** The parsed `Pin` value
+  from `parse_pin_or_fail()` was silently discarded; `backend.sample()` queried a
+  hardcoded observable (TIM2 counter / PA5) regardless of what the test specified.
+  Now polls `backend.pin(port, pin_num)` directly on the asserted pin.
+- **Lockstep `collect()` folded backend errors into false divergence reports.**
+  `Err(_) => break` treated a dropped GDB connection the same as a clean
+  end-of-stream, producing a truncated trace that `compare()` reported as
+  `Diverged`. `collect()` now returns `Result` and the caller surfaces the error.
+- **QEMU `read_mem32`/`write_mem32` left the target permanently halted on a
+  transient resume error.** `continue_execution().await?` propagated via `?` after
+  a successful read/write, discarding the result and halting the target for the
+  rest of the run. Resume now retries once via `resume_with_retry()` and its
+  outcome is tracked separately from the read/write result.
+- **Hardware `read_memory` left the STM32 target permanently halted on a read
+  timeout.** An early `?` on `read_until_value` skipped the `resume` telnet
+  command, causing OpenOCD to keep the target halted. Read and resume results are
+  now tracked independently; resume is always attempted once halt succeeds.
+- **Hardware `write_memory` discarded a successful write on resume failure.**
+  The halt/mww/resume sequence was chained behind a single `?`; a resume error
+  after a successful write propagated as the function's return value. Write and
+  resume results are now tracked separately with the same pattern as `read_memory`.
+- **PWM frequency constraint check silently passed invalid configs on u64
+  overflow.** `(freq as u64) * arr_plus_one` wrapped silently for large TOML
+  `i64` frequency values, causing the `divisor > timer_clk` guard to evaluate
+  false. Replaced with `checked_mul`; an overflowing product is treated as an
+  unreachable frequency and emits a conflict.
+- **`Serial::Port` `read_byte` treated `WouldBlock` as an error instead of a
+  timeout.** Some serialport backends return `WouldBlock` on timeout rather than
+  `TimedOut`; the `Port` branch only caught `TimedOut`, breaking the `Ok(None)`
+  timeout contract. Now catches both, consistent with the `Tcp` branch.
+- **`connect()` returned `BadMagic(0)` when the device never booted.** A target
+  that never published the mailbox magic word (no probe attached, power issue)
+  returned `BadMagic(0)` — indistinguishable from wrong firmware. The deadline
+  check is now split: magic still zero at timeout → `SdkError::Timeout`; non-zero
+  mismatch → `BadMagic` as before.
+- **`nucleus lockstep` suppressed `UnknownFamily` warnings.** `run_lockstep` called
+  `nucleus_compiler::check()` which silently fell back to the F446RE database for
+  unknown families. Now uses `check_family()`, consistent with `run_check` and
+  `run_test`.
+
 ## [0.1.0] - 2026-06-13
 
 ### Added
@@ -60,6 +107,7 @@ These shipped on `main` ahead of the first tagged release:
 - **Phase 1 — Constraint Database Foundation.** `nucleus-db`, the deterministic
   F446RE pin/AF/peripheral table.
 
-[Unreleased]: https://github.com/harshverma27/nucleus/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/harshverma27/nucleus/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/harshverma27/nucleus/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/harshverma27/nucleus/compare/v0.0.1...v0.1.0
 [0.0.1]: https://github.com/harshverma27/nucleus/releases/tag/v0.0.1

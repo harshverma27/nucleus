@@ -624,7 +624,7 @@ dependencies = [
 
 [[package]]
 name = "nucleus-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "nucleus-compiler",
@@ -638,7 +638,7 @@ dependencies = [
 
 [[package]]
 name = "nucleus-compiler"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nucleus-db",
  "serde",
@@ -648,14 +648,14 @@ dependencies = [
 
 [[package]]
 name = "nucleus-db"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "roxmltree",
 ]
 
 [[package]]
 name = "nucleus-hil"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nucleus-compiler",
  "nucleus-db",
@@ -668,7 +668,7 @@ dependencies = [
 
 [[package]]
 name = "nucleus-history"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -676,11 +676,11 @@ dependencies = [
 
 [[package]]
 name = "nucleus-itm"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "nucleus-lsp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nucleus-compiler",
  "nucleus-db",
@@ -690,7 +690,7 @@ dependencies = [
 
 [[package]]
 name = "nucleus-test-sdk"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nucleus-compiler",
  "nucleus-db",
@@ -700,7 +700,7 @@ dependencies = [
 
 [[package]]
 name = "nucleus-trace"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "futures-util",
  "nucleus-compiler",
