@@ -305,17 +305,35 @@ impl HardwareBackend {
         }
         let runtime = self.runtime.as_ref().expect("runtime set in start()");
         let telnet_addr = format!("127.0.0.1:{}", self.telnet_port);
-        let result: Result<(), HilError> = runtime.block_on(async {
-            let mut conn = TcpStream::connect(&telnet_addr).await?;
-            telnet_write_line(&mut conn, "halt").await?;
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            telnet_write_line(&mut conn, &format!("mww 0x{addr:08x} 0x{value:08x}")).await?;
-            // Brief settle so OpenOCD applies the write before we resume.
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            telnet_write_line(&mut conn, "resume").await?;
-            Ok(())
-        });
-        result.map_err(|err| self.record_failure(err))
+        // `write_result` and `resume_result` are tracked separately: an
+        // `mww` failure must not skip `resume` via an early `?` — that would
+        // leave the target halted for the rest of the run (issue #49).
+        // `resume` is always attempted once `halt` has actually landed.
+        let (write_result, resume_result): (Result<(), HilError>, Result<(), HilError>) = runtime
+            .block_on(async {
+                let mut conn = match TcpStream::connect(&telnet_addr).await {
+                    Ok(conn) => conn,
+                    Err(err) => return (Err(HilError::Io(err)), Ok(())),
+                };
+                if let Err(err) = telnet_write_line(&mut conn, "halt").await {
+                    return (Err(err), Ok(()));
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                let write_result = async {
+                    telnet_write_line(&mut conn, &format!("mww 0x{addr:08x} 0x{value:08x}"))
+                        .await?;
+                    // Brief settle so OpenOCD applies the write before we resume.
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    Ok(())
+                }
+                .await;
+                let resume_result = telnet_write_line(&mut conn, "resume").await;
+                (write_result, resume_result)
+            });
+        if let Err(err) = resume_result {
+            self.record_failure(err);
+        }
+        write_result.map_err(|err| self.record_failure(err))
     }
 }
 
@@ -738,6 +756,62 @@ channel1 = "PA5"
 
         let result = backend.read_memory(0x4002_0010);
         assert!(matches!(result, Err(HilError::Protocol(_))));
+        assert!(backend.failure.is_some());
+
+        server.join().unwrap();
+    }
+
+    /// Regression for issue #49: `write_memory` used a single `?`-chained
+    /// async block where a `resume` failure propagated as the whole
+    /// function's error, discarding the fact the `mww` write itself already
+    /// succeeded. `write_result` and `resume_result` must be tracked
+    /// separately — a successful write returns `Ok(())` to the caller even
+    /// when the subsequent `resume` fails (parity with `read_memory` and the
+    /// qemu backend's equivalent fix in issue #47).
+    #[test]
+    fn write_memory_keeps_a_successful_write_even_when_resume_fails() {
+        use std::io::Read;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+
+            let mut acc = String::new();
+            let mut buf = [0u8; 256];
+
+            while !acc.contains("halt") {
+                let n = sock.read(&mut buf).unwrap();
+                assert!(n > 0, "connection closed before halt was observed");
+                acc.push_str(&String::from_utf8_lossy(&buf[..n]));
+            }
+            while !acc.contains("mww") {
+                let n = sock.read(&mut buf).unwrap();
+                assert!(n > 0, "connection closed before mww was observed");
+                acc.push_str(&String::from_utf8_lossy(&buf[..n]));
+            }
+
+            // The mww bytes already reached us, so the client's write_all
+            // for it has already returned Ok. Fully closing here (rather
+            // than a half-close) means the kernel has no socket left to
+            // deliver the client's later `resume` bytes to, so it answers
+            // with an RST — the client's next write fails deterministically
+            // instead of silently buffering.
+            drop(sock);
+        });
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut backend = HardwareBackend::default();
+        backend.started = true;
+        backend.runtime = Some(runtime);
+        backend.telnet_port = addr.port();
+
+        let result = backend.write_memory(0x4002_0010, 0xdead_beef);
+        assert!(
+            result.is_ok(),
+            "a write that reached the server must succeed even if resume fails, got {result:?}"
+        );
         assert!(backend.failure.is_some());
 
         server.join().unwrap();
