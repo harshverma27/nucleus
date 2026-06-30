@@ -713,6 +713,28 @@ fn lockstep_with_present_firmware_runs_both_backends_concurrently_without_hangin
 }
 
 #[test]
+fn lockstep_warns_on_unknown_family_instead_of_silently_falling_back() {
+    // Regression test for issue 53: run_lockstep called check() instead of
+    // check_family(), so an unrecognized [device].family silently validated
+    // against the F446RE fallback DB with no warning — unlike `check` and
+    // `test`, which both surface UnknownFamily via check_family()/test_plan().
+    let proj = TempProject::new();
+    std::fs::write(
+        proj.path().join("stm32.toml"),
+        "[device]\nfamily = \"STM32H750\"\n",
+    )
+    .unwrap();
+
+    let out = nucleus(&["lockstep".as_ref(), proj.path().as_os_str()]);
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unsupported device family"),
+        "expected an UnknownFamily warning, got stderr:\n{stderr}"
+    );
+}
+
+#[test]
 fn init_rejects_unknown_board() {
     let proj = TempProject::new();
     let out = nucleus(&[
