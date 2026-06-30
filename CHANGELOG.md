@@ -12,42 +12,59 @@ notes. This file is the curated, human-readable history.
 
 ## [0.2.0] - 2026-06-30
 
+This release is the complete **Nucleus v2 correctness loop**: static verification
+is extended with three new conflict classes, a constraint auto-router replaces
+manual pin assignment, and a dual-backend HIL substrate proves configurations on
+real silicon and a simulated twin simultaneously. The loop closes with test
+history, CI integration, and lockstep co-execution.
+
 ### Added
-- **Resilient QEMU memory access.** `read_mem32` and `write_mem32` now retry
-  `continue_execution` once after a transient GDB-RSP blip and track resume
-  outcome separately from the read/write result, so a single TCP hiccup no longer
-  halts the target for the rest of the run.
-- **Resilient hardware memory access.** `read_memory` and `write_memory` over
-  OpenOCD telnet now always attempt `resume` once `halt` succeeds, tracking each
-  step independently so a read timeout or mww failure no longer leaves the STM32
-  permanently halted.
-- **Lockstep observation error reporting.** `collect()` now returns
-  `Result<ObservationTrace, HilError>`; a dropped GDB connection mid-collection
-  surfaces as an explicit error instead of a truncated trace that `compare()`
-  would silently report as `Diverged`.
-- **Correct per-pin `PinToggles` assertion.** The assertion now polls
-  `backend.pin(port, pin_num)` on the exact pin named in the test config; a
-  pure `measure_toggle_hz()` helper is extracted for deterministic unit testing.
-- **`SdkError::Timeout` on device boot failure.** `connect()` distinguishes a
-  target that never publishes the mailbox magic word (timeout → `SdkError::Timeout`)
-  from one that publishes the wrong value (mismatch → `BadMagic`), so probe and
-  power issues are immediately identifiable.
-- **`UnknownFamily` warning in `nucleus lockstep`.** `run_lockstep` now uses
-  `check_family()` and emits the same family-fallback warning as `run_check` and
-  `run_test` when the configured family is not recognised.
-- **PWM frequency overflow detection.** The constraint check uses `checked_mul`
-  for the `freq × arr_plus_one` product; an overflowing value is treated as an
-  unreachable frequency and emits a conflict instead of silently wrapping.
-- **`WouldBlock` treated as timeout in serial `read_byte`.** The `Port` backend
-  now maps both `WouldBlock` and `TimedOut` to `Ok(None)`, matching the `Tcp`
-  backend and honoring the documented timeout contract across all serialport
-  drivers.
-- **Clock-tree solver guards against zero HSE.** `default_effective()` returns
-  `Result` and maps a zero VCO input frequency to `ResolveError::ZeroDivider`,
-  surfacing it as a normal constraint conflict rather than a runtime panic.
-- **`run_lockstep` surfaces backend collection errors.** Mid-run observation
-  failures are now printed and cause the lockstep command to exit non-zero, rather
-  than being silently folded into a spurious divergence report.
+- **Clock-tree solver (M1).** Models the full STM32F4 PLL, prescaler, and
+  per-peripheral frequency derivation chain. Rejects over-clocked buses and
+  unreachable baud rates as `ClockConstraint` conflicts; `nucleus check` reports
+  the derived frequency alongside each violation.
+- **DMA arbitration solver (M2).** Models DMA1/DMA2 stream × channel × peripheral
+  request maps for F446RE and F411RE. Detects stream collisions and suggests the
+  nearest free alternative as part of the conflict message.
+- **IRQ / NVIC verifier (M3).** Validates EXTI line ownership, preemption-priority
+  ordering, and shared-pin peripheral IRQ priority. Introduces a `Severity` enum
+  so warnings and errors are distinguished in `nucleus check` output and LSP
+  diagnostics.
+- **Constraint auto-router (M4) — `nucleus route`.** Backtracking router that
+  assigns pins to peripherals from intent alone; emits `Unroutable` conflicts when
+  no legal assignment exists. `nucleus route` writes the resolved pin assignments
+  back into `stm32.toml` in place. LSP surfaces `Unroutable` with severity-aware
+  diagnostics.
+- **Dual-backend HIL substrate (M5).** `nucleus-hil` crate with a `Backend` trait
+  implemented by both a QEMU/GDB-RSP backend and a hardware backend (OpenOCD
+  telnet + SWO capture against a real NUCLEO). Both share the same observation and
+  assertion API.
+- **Declarative tests (M6) — `nucleus test`.** `[[test]]` blocks in `stm32.toml`
+  declare assertions (`PinState`, `PinToggles`, `IrqFires`, `UartReceives`) that
+  `nucleus test` runs against both backends. The compiler validates assertions at
+  `nucleus check` time; the LSP adds hover and completion for assertion fields.
+- **Scripted tests (M7).** `[[test]]` blocks with `type = "scripted"` compile and
+  run a Rust test binary via `cargo test`, with the `nucleus-test-sdk` crate
+  providing a mailbox `AgentClient` and a `Serial` helper (VCP + QEMU TCP) for
+  firmware-side I/O. `nucleus test` selects backends by availability and runs
+  scripted and declarative suites together.
+- **Test history and CI-native HIL (M8/M9).** Every `nucleus test` run appends a
+  `TestEntry` to `tests/test_history.json`. `nucleus history show` renders a
+  colour-coded bar chart of recent pass/fail/skip counts in the terminal.
+  A reusable `nucleus-history` crate exposes the schema for tooling. The existing
+  `nucleus-action` CI composite now runs `nucleus test` and posts a pass/fail
+  summary as a pull-request comment.
+- **Lockstep co-execution (M10) — `nucleus lockstep`.** Runs the test suite on
+  QEMU and hardware concurrently, collects `ObservationTrace` streams from both,
+  and reports `DivergenceReport::Diverged` when the traces differ — catching
+  simulator/silicon gaps that neither backend alone would surface.
+- **PWM frequency / duty-resolution conflict detection.** The clock-tree solver
+  now checks that the requested PWM frequency is achievable at the configured
+  duty resolution on the target timer clock and emits a `ClockConstraint` conflict
+  when it is not.
+- **EXTI priority vs. shared-pin peripheral IRQ checking.** The NVIC verifier
+  validates that an EXTI line's priority does not violate ordering constraints
+  with the peripheral that shares the same GPIO pin.
 
 ## [0.1.0] - 2026-06-13
 
