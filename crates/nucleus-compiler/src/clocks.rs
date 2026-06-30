@@ -486,8 +486,15 @@ pub fn validate(config: &Config, tree: &ClockTree) -> Vec<Conflict> {
             .clamp(1, 31) as u32;
         let arr_plus_one: u64 = 1u64 << bits;
         let timer_clk = config.device.clock_hz.unwrap_or(180_000_000).max(1);
-        let divisor = (freq as u64) * arr_plus_one;
-        if divisor > timer_clk {
+        // `freq` comes straight from TOML as an i64 and can be arbitrarily
+        // large (e.g. a typo'd extra digit) — `checked_mul` avoids a debug-build
+        // overflow panic, and an overflowing product is itself proof the
+        // frequency is unreachable, so it's `> timer_clk` regardless.
+        let unreachable = match (freq as u64).checked_mul(arr_plus_one) {
+            Some(divisor) => divisor > timer_clk,
+            None => true,
+        };
+        if unreachable {
             let actual_hz = timer_clk as f64 / arr_plus_one as f64;
             out.push(cc(
                 &name,
@@ -755,6 +762,25 @@ mod tests {
             &f446(),
         );
         assert_eq!(conflicts, vec![]);
+    }
+
+    #[test]
+    fn huge_pwm_frequency_is_a_clock_constraint_not_a_panic() {
+        // Issue #50: `(freq as u64) * arr_plus_one` overflowed u64 silently
+        // for a large TOML i64 frequency_hz (a debug-build panic, or a
+        // wrapped-around-small product that wrongly passed the `> timer_clk`
+        // check in release). A frequency this large is unreachable no matter
+        // how it's computed, so it must surface a diagnostic either way.
+        let conflicts = validate_toml(
+            "[peripherals.tim2]\nchannel1=\"PA0\"\nfrequency_hz=9000000000000000000\nduty_resolution_bits=16\n",
+            &f446(),
+        );
+        assert_eq!(conflicts.len(), 1, "got {conflicts:?}");
+        assert!(matches!(
+            &conflicts[0],
+            Conflict::ClockConstraint { node, reason }
+                if node == "TIM2" && reason.contains("unachievable")
+        ));
     }
 
     #[test]
