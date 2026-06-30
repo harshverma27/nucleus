@@ -12,50 +12,42 @@ notes. This file is the curated, human-readable history.
 
 ## [0.2.0] - 2026-06-30
 
-### Fixed
-- **Divide-by-zero panic in clock-tree solver.** `default_effective()` divided by
-  `vco_in` without guarding against zero; a family model with no HSE oscillator
-  panicked at runtime instead of surfacing a solver diagnostic. Now returns
-  `Result` and maps `vco_in == 0` to `ResolveError::ZeroDivider`.
-- **`PinToggles` assertion always tested the wrong pin.** The parsed `Pin` value
-  from `parse_pin_or_fail()` was silently discarded; `backend.sample()` queried a
-  hardcoded observable (TIM2 counter / PA5) regardless of what the test specified.
-  Now polls `backend.pin(port, pin_num)` directly on the asserted pin.
-- **Lockstep `collect()` folded backend errors into false divergence reports.**
-  `Err(_) => break` treated a dropped GDB connection the same as a clean
-  end-of-stream, producing a truncated trace that `compare()` reported as
-  `Diverged`. `collect()` now returns `Result` and the caller surfaces the error.
-- **QEMU `read_mem32`/`write_mem32` left the target permanently halted on a
-  transient resume error.** `continue_execution().await?` propagated via `?` after
-  a successful read/write, discarding the result and halting the target for the
-  rest of the run. Resume now retries once via `resume_with_retry()` and its
-  outcome is tracked separately from the read/write result.
-- **Hardware `read_memory` left the STM32 target permanently halted on a read
-  timeout.** An early `?` on `read_until_value` skipped the `resume` telnet
-  command, causing OpenOCD to keep the target halted. Read and resume results are
-  now tracked independently; resume is always attempted once halt succeeds.
-- **Hardware `write_memory` discarded a successful write on resume failure.**
-  The halt/mww/resume sequence was chained behind a single `?`; a resume error
-  after a successful write propagated as the function's return value. Write and
-  resume results are now tracked separately with the same pattern as `read_memory`.
-- **PWM frequency constraint check silently passed invalid configs on u64
-  overflow.** `(freq as u64) * arr_plus_one` wrapped silently for large TOML
-  `i64` frequency values, causing the `divisor > timer_clk` guard to evaluate
-  false. Replaced with `checked_mul`; an overflowing product is treated as an
-  unreachable frequency and emits a conflict.
-- **`Serial::Port` `read_byte` treated `WouldBlock` as an error instead of a
-  timeout.** Some serialport backends return `WouldBlock` on timeout rather than
-  `TimedOut`; the `Port` branch only caught `TimedOut`, breaking the `Ok(None)`
-  timeout contract. Now catches both, consistent with the `Tcp` branch.
-- **`connect()` returned `BadMagic(0)` when the device never booted.** A target
-  that never published the mailbox magic word (no probe attached, power issue)
-  returned `BadMagic(0)` — indistinguishable from wrong firmware. The deadline
-  check is now split: magic still zero at timeout → `SdkError::Timeout`; non-zero
-  mismatch → `BadMagic` as before.
-- **`nucleus lockstep` suppressed `UnknownFamily` warnings.** `run_lockstep` called
-  `nucleus_compiler::check()` which silently fell back to the F446RE database for
-  unknown families. Now uses `check_family()`, consistent with `run_check` and
-  `run_test`.
+### Added
+- **Resilient QEMU memory access.** `read_mem32` and `write_mem32` now retry
+  `continue_execution` once after a transient GDB-RSP blip and track resume
+  outcome separately from the read/write result, so a single TCP hiccup no longer
+  halts the target for the rest of the run.
+- **Resilient hardware memory access.** `read_memory` and `write_memory` over
+  OpenOCD telnet now always attempt `resume` once `halt` succeeds, tracking each
+  step independently so a read timeout or mww failure no longer leaves the STM32
+  permanently halted.
+- **Lockstep observation error reporting.** `collect()` now returns
+  `Result<ObservationTrace, HilError>`; a dropped GDB connection mid-collection
+  surfaces as an explicit error instead of a truncated trace that `compare()`
+  would silently report as `Diverged`.
+- **Correct per-pin `PinToggles` assertion.** The assertion now polls
+  `backend.pin(port, pin_num)` on the exact pin named in the test config; a
+  pure `measure_toggle_hz()` helper is extracted for deterministic unit testing.
+- **`SdkError::Timeout` on device boot failure.** `connect()` distinguishes a
+  target that never publishes the mailbox magic word (timeout → `SdkError::Timeout`)
+  from one that publishes the wrong value (mismatch → `BadMagic`), so probe and
+  power issues are immediately identifiable.
+- **`UnknownFamily` warning in `nucleus lockstep`.** `run_lockstep` now uses
+  `check_family()` and emits the same family-fallback warning as `run_check` and
+  `run_test` when the configured family is not recognised.
+- **PWM frequency overflow detection.** The constraint check uses `checked_mul`
+  for the `freq × arr_plus_one` product; an overflowing value is treated as an
+  unreachable frequency and emits a conflict instead of silently wrapping.
+- **`WouldBlock` treated as timeout in serial `read_byte`.** The `Port` backend
+  now maps both `WouldBlock` and `TimedOut` to `Ok(None)`, matching the `Tcp`
+  backend and honoring the documented timeout contract across all serialport
+  drivers.
+- **Clock-tree solver guards against zero HSE.** `default_effective()` returns
+  `Result` and maps a zero VCO input frequency to `ResolveError::ZeroDivider`,
+  surfacing it as a normal constraint conflict rather than a runtime panic.
+- **`run_lockstep` surfaces backend collection errors.** Mid-run observation
+  failures are now printed and cause the lockstep command to exit non-zero, rather
+  than being silently folded into a spurious divergence report.
 
 ## [0.1.0] - 2026-06-13
 
