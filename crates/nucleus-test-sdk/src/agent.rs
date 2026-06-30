@@ -5,6 +5,11 @@ use nucleus_hil::backend::{Backend, HilError};
 
 use crate::protocol::*;
 
+/// Sentinel `cmd` for `SdkError::Timeout` from [`AgentClient::connect`] —
+/// not a real on-device command id (those are `protocol::CMD_*`), just a
+/// label distinguishing a connect-handshake timeout from an `issue()` one.
+const CONNECT_CMD: u32 = u32::MAX;
+
 /// Errors talking to the device test-agent.
 #[derive(Debug)]
 pub enum SdkError {
@@ -70,8 +75,16 @@ impl<'a> AgentClient<'a> {
             }
             // A non-zero, non-matching magic is a real mismatch, not a boot
             // race — fail immediately rather than waiting out the timeout.
-            if magic != 0 || Instant::now() >= deadline {
+            if magic != 0 {
                 return Err(SdkError::BadMagic(magic));
+            }
+            if Instant::now() >= deadline {
+                // Magic never appeared at all — the device never booted far
+                // enough to publish it (no probe attached, power issue,
+                // etc.), which is a timeout, not a "wrong firmware loaded"
+                // mismatch. `cmd` here isn't a real on-device command id —
+                // CONNECT_CMD just labels this call site in the message.
+                return Err(SdkError::Timeout { cmd: CONNECT_CMD });
             }
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -237,6 +250,18 @@ mod tests {
         let mut dev = FakeDevice::new();
         let mut c = AgentClient::new(&mut dev);
         assert_eq!(c.connect().unwrap(), PROTO_VERSION);
+    }
+
+    #[test]
+    fn connect_times_out_instead_of_reporting_bad_magic_zero() {
+        // Issue #52: a device that never boots (magic stays 0 for the whole
+        // poll_timeout) used to surface as BadMagic(0), indistinguishable
+        // from genuinely wrong firmware. It must report Timeout instead.
+        let mut dev = FakeDevice::new();
+        dev.ram.remove(&(MAILBOX_BASE + OFF_MAGIC));
+        let mut c = AgentClient::new(&mut dev);
+        c.poll_timeout = Duration::from_millis(20);
+        assert!(matches!(c.connect(), Err(SdkError::Timeout { .. })));
     }
 
     #[test]
