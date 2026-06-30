@@ -52,7 +52,8 @@ fn collect_captures_real_qemu_itm_boot_log() {
         &vars,
         Duration::from_secs(3),
         Duration::from_secs(5),
-    );
+    )
+    .expect("collection against a healthy qemu backend succeeds");
 
     assert!(
         !trace.checkpoints.is_empty(),
@@ -89,7 +90,8 @@ fn comparing_two_collections_of_the_same_firmware_agrees() {
         &vars,
         Duration::from_secs(3),
         Duration::from_secs(5),
-    );
+    )
+    .expect("collection against a healthy qemu backend succeeds");
     let _ = backend_a.finish();
 
     let mut backend_b = QemuBackend::default();
@@ -99,7 +101,8 @@ fn comparing_two_collections_of_the_same_firmware_agrees() {
         &vars,
         Duration::from_secs(3),
         Duration::from_secs(5),
-    );
+    )
+    .expect("collection against a healthy qemu backend succeeds");
     let _ = backend_b.finish();
 
     let report = lockstep::compare(&trace_a, &trace_b);

@@ -19,7 +19,7 @@ use nucleus_itm::Packet;
 use nucleus_trace::translate::{Translator, VariableMap};
 use serde_json::Value;
 
-use crate::backend::{Backend, ItmEvent};
+use crate::backend::{Backend, HilError, ItmEvent};
 
 /// One sync point: the raw ITM event observed, plus its decoded
 /// `(name, value)` if its port matches a `[trace.variables]` entry. Port-0
@@ -59,15 +59,19 @@ pub enum DivergenceReport {
 /// elapses, decoding each event against `vars`. `backend` must already be
 /// started ([`Backend::start`] called and `Ok`) — this only observes.
 ///
-/// A backend error mid-collection stops the loop and returns whatever
-/// checkpoints were gathered so far; callers compare partial traces the
-/// same as complete ones (a length mismatch is itself a divergence).
+/// `Ok(None)` and `total_timeout` elapsing both end the loop normally,
+/// returning whatever checkpoints were gathered so far — callers compare
+/// these the same as complete traces (a length mismatch is itself a
+/// divergence). A backend `Err` is different: it means observation itself
+/// failed, not "no more output", so it's returned as `Err` rather than
+/// folded into a short trace that [`compare`] would otherwise report as an
+/// indistinguishable divergence.
 pub fn collect(
     backend: &mut dyn Backend,
     vars: &VariableMap,
     timeout_per_event: Duration,
     total_timeout: Duration,
-) -> ObservationTrace {
+) -> Result<ObservationTrace, HilError> {
     let mut checkpoints = Vec::new();
     let deadline = Instant::now() + total_timeout;
     let mut translator = Translator::new(vars.clone());
@@ -85,11 +89,11 @@ pub fn collect(
                 });
             }
             Ok(None) => break,
-            Err(_) => break,
+            Err(err) => return Err(err),
         }
     }
 
-    ObservationTrace { checkpoints }
+    Ok(ObservationTrace { checkpoints })
 }
 
 /// Decode `event` by replaying it through `translator` — the same
@@ -188,12 +192,119 @@ fn decoded_display(decoded: &Option<(String, Value)>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::{BackendKind, FirmwareArtifact, RunResult, RunStatus, RunTiming, Sample};
+    use std::cell::Cell;
 
     fn event(port: u8, data: &[u8]) -> ItmEvent {
         ItmEvent {
             port,
             data: data.to_vec(),
         }
+    }
+
+    /// A fake `Backend` whose `await_itm_event` replays a canned sequence of
+    /// results, one per call, falling back to `Ok(None)` once exhausted.
+    struct FakeBackend {
+        events: Vec<Result<Option<ItmEvent>, ()>>,
+        calls: Cell<usize>,
+    }
+
+    impl Backend for FakeBackend {
+        fn name(&self) -> BackendKind {
+            BackendKind::Qemu
+        }
+
+        fn start(
+            &mut self,
+            _firmware: &FirmwareArtifact,
+            _check_report: &nucleus_compiler::CheckReport,
+        ) -> Result<(), HilError> {
+            Ok(())
+        }
+
+        fn pin(&mut self, _port: nucleus_db::Port, _pin_num: u8) -> Result<bool, HilError> {
+            Ok(false)
+        }
+
+        fn register(&mut self, _peripheral: &str, _offset: u32) -> Result<u32, HilError> {
+            Ok(0)
+        }
+
+        fn read_mem32(&mut self, _addr: u32) -> Result<u32, HilError> {
+            Ok(0)
+        }
+
+        fn write_mem32(&mut self, _addr: u32, _value: u32) -> Result<(), HilError> {
+            Ok(())
+        }
+
+        fn await_itm_event(&mut self, _timeout: Duration) -> Result<Option<ItmEvent>, HilError> {
+            let i = self.calls.get();
+            self.calls.set(i + 1);
+            match self.events.get(i) {
+                Some(Ok(event)) => Ok(event.clone()),
+                Some(Err(())) => Err(HilError::Protocol("dropped connection".to_string())),
+                None => Ok(None),
+            }
+        }
+
+        fn sample(&mut self, _duration: Duration) -> Result<Sample, HilError> {
+            Ok(Sample {
+                target: crate::backend::SampleTarget::RegisterChanged {
+                    peripheral: "TIM2",
+                    offset: 0,
+                },
+                readings: vec![],
+            })
+        }
+
+        fn finish(&mut self) -> RunResult {
+            RunResult {
+                backend: self.name(),
+                status: RunStatus::Completed,
+                log: vec![],
+                traces: vec![],
+                timing: RunTiming::default(),
+            }
+        }
+    }
+
+    #[test]
+    fn collect_stops_cleanly_on_ok_none() {
+        let mut backend = FakeBackend {
+            events: vec![Ok(Some(event(1, &[1, 0, 0, 0]))), Ok(None)],
+            calls: Cell::new(0),
+        };
+        let trace = collect(
+            &mut backend,
+            &VariableMap::new(),
+            Duration::from_millis(10),
+            Duration::from_secs(1),
+        )
+        .expect("a clean end of stream is Ok, not Err");
+        assert_eq!(trace.checkpoints.len(), 1);
+    }
+
+    #[test]
+    fn collect_surfaces_backend_error_instead_of_a_false_short_trace() {
+        // Issue #46: a backend error mid-collection used to be folded into
+        // `Ok(None)` (a clean end-of-stream), producing a short trace that
+        // `compare()` would report as a normal `Diverged` — indistinguishable
+        // from a real behavioral difference. It must come back as `Err`.
+        let mut backend = FakeBackend {
+            events: vec![Ok(Some(event(1, &[1, 0, 0, 0]))), Err(())],
+            calls: Cell::new(0),
+        };
+        let result = collect(
+            &mut backend,
+            &VariableMap::new(),
+            Duration::from_millis(10),
+            Duration::from_secs(1),
+        );
+        assert!(
+            matches!(result, Err(HilError::Protocol(_))),
+            "expected Err(Protocol(_)), got {result:?}"
+        );
     }
 
     fn checkpoint(port: u8, data: &[u8], decoded: Option<(&str, Value)>) -> Checkpoint {

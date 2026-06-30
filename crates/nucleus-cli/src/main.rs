@@ -742,9 +742,15 @@ fn run_lockstep(path: &Path, explain: bool) -> ExitCode {
                         Err(())
                     }
                     Ok(()) => {
-                        let trace = lockstep::collect(backend.as_mut(), &vars, per_event, total);
+                        let result = lockstep::collect(backend.as_mut(), &vars, per_event, total);
                         let _ = backend.finish();
-                        Ok(Some((kind, trace)))
+                        match result {
+                            Ok(trace) => Ok(Some((kind, trace))),
+                            Err(err) => {
+                                eprintln!("error: {kind:?} failed mid-collection: {err}");
+                                Err(())
+                            }
+                        }
                     }
                 }
             })
@@ -752,15 +758,15 @@ fn run_lockstep(path: &Path, explain: bool) -> ExitCode {
         .collect();
 
     let mut traces = Vec::new();
-    let mut start_failed = false;
+    let mut backend_failed = false;
     for handle in handles {
         match handle.join().expect("backend thread panicked") {
             Ok(Some(pair)) => traces.push(pair),
             Ok(None) => {}
-            Err(()) => start_failed = true,
+            Err(()) => backend_failed = true,
         }
     }
-    if start_failed {
+    if backend_failed {
         return ExitCode::FAILURE;
     }
 
