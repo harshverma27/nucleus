@@ -672,13 +672,18 @@ fn run_lockstep(path: &Path, explain: bool) -> ExitCode {
         }
     };
 
-    let check_report = match nucleus_compiler::check(&text) {
-        Ok(report) => report,
+    let (check_report, family_warning) = match check_family(&text) {
+        Ok(result) => result,
         Err(err) => {
             print_parse_error(&toml_path, &err);
             return ExitCode::FAILURE;
         }
     };
+
+    if let Some(warning) = &family_warning {
+        eprintln!("warning: {warning}");
+        eprintln!("         falling back to STM32F446RE; results may be inaccurate.\n");
+    }
 
     if !check_report.is_ok() {
         let n = check_report.conflicts.len();
