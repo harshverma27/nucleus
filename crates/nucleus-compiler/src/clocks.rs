@@ -87,13 +87,19 @@ fn osc_hz(tree: &ClockTree, osc: Oscillator) -> u32 {
 /// The family's known-good default PLL/prescaler selections, computed from the
 /// model so each family lands exactly at its own limit (F446 → 180 MHz on
 /// PCLK-legal prescalers, F411 → 100 MHz). No silicon constant is hard-coded.
-fn default_effective(tree: &ClockTree) -> Effective {
+fn default_effective(tree: &ClockTree) -> Result<Effective, ResolveError> {
     let hse = osc_hz(tree, Oscillator::Hse);
     let limits = tree.limits();
     // Target 1 MHz VCO input: M = HSE / 1 MHz (8 for an 8 MHz HSE).
     let pll_m = (hse / 1_000_000).max(tree.pll().m.min);
     let pll_p = 2;
     let vco_in = hse / pll_m;
+    // A family with no HSE modeled (or an HSE below 1 MHz, paired with the
+    // PLL's own minimum M) leaves vco_in at 0 — the default PLL setup always
+    // sources from HSE, so there's no default to fall back to.
+    if vco_in == 0 {
+        return Err(ResolveError::ZeroDivider { node: "PLL" });
+    }
     // N so that SYSCLK = (vco_in * N) / P == max SYSCLK.
     let pll_n = limits.max_sysclk_hz * pll_p / vco_in;
 
@@ -101,7 +107,7 @@ fn default_effective(tree: &ClockTree) -> Effective {
     let apb1_presc = smallest_presc_within(tree, Bus::Apb1, limits.max_sysclk_hz / ahb_presc);
     let apb2_presc = smallest_presc_within(tree, Bus::Apb2, limits.max_sysclk_hz / ahb_presc);
 
-    Effective {
+    Ok(Effective {
         source: SysclkSource::Pll,
         pll_source: Oscillator::Hse,
         pll_m,
@@ -111,7 +117,7 @@ fn default_effective(tree: &ClockTree) -> Effective {
         ahb_presc,
         apb1_presc,
         apb2_presc,
-    }
+    })
 }
 
 /// The smallest legal prescaler for `bus` such that `hclk / presc` is within that
@@ -135,7 +141,7 @@ fn smallest_presc_within(tree: &ClockTree, bus: Bus, hclk: u32) -> u32 {
 /// Fold the optional `[clocks]` fields onto the family defaults. Source strings
 /// that don't parse are reported via [`ResolveError`] so they don't cascade.
 fn effective(clocks: &Clocks, tree: &ClockTree) -> Result<Effective, ResolveError> {
-    let mut eff = default_effective(tree);
+    let mut eff = default_effective(tree)?;
 
     if let Some(s) = &clocks.source {
         eff.source = parse_sysclk_source(s).ok_or_else(|| ResolveError::UnknownSource {
@@ -749,6 +755,28 @@ mod tests {
             &f446(),
         );
         assert_eq!(conflicts, vec![]);
+    }
+
+    #[test]
+    fn no_hse_modeled_is_a_clock_constraint_not_a_panic() {
+        // Issue #44: default_effective() divided max_sysclk_hz * pll_p by
+        // vco_in (derived from HSE) with no zero guard. A family with no HSE
+        // modeled — or any future family whose default PLL math bottoms out
+        // at 0 Hz — must surface a diagnostic, not panic.
+        let tree = ClockTree::without_oscillator(f446(), Oscillator::Hse);
+        let conflicts = validate_toml("", &tree);
+        assert_eq!(conflicts.len(), 1, "got {conflicts:?}");
+        assert!(matches!(
+            &conflicts[0],
+            Conflict::ClockConstraint { node, reason }
+                if node == "PLL" && reason.contains("must not be zero")
+        ));
+        assert_eq!(resolve_toml_opt("", &tree), None);
+    }
+
+    fn resolve_toml_opt(text: &str, tree: &ClockTree) -> Option<ResolvedClocks> {
+        let cfg = config::parse(text).unwrap();
+        resolve(&cfg.clocks, tree)
     }
 
     #[test]

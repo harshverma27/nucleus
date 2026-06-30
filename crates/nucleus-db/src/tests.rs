@@ -573,6 +573,17 @@ fn apbx_timer_x2_rule() {
 }
 
 #[test]
+fn without_oscillator_drops_only_the_named_source() {
+    let base = ClockTree::f446re();
+    let no_hse = ClockTree::without_oscillator(base, Oscillator::Hse);
+    assert!(no_hse.oscillator(Oscillator::Hse).is_none());
+    // Everything else from `base` carries over unchanged.
+    assert!(no_hse.oscillator(Oscillator::Hsi).is_some());
+    assert_eq!(no_hse.limits().max_sysclk_hz, base.limits().max_sysclk_hz);
+    assert_eq!(no_hse.pll().m.min, base.pll().m.min);
+}
+
+#[test]
 fn sysclk_sources_present() {
     for ct in [ClockTree::f446re(), ClockTree::f411re()] {
         let srcs = ct.sysclk_sources();
