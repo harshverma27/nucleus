@@ -92,6 +92,8 @@ fn parse_pin_or_fail(name: &str, pin: &str) -> Result<Pin, TestOutcome> {
     })
 }
 
+const TOGGLE_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
 fn run_pin_toggles(
     backend: &mut dyn Backend,
     name: &str,
@@ -99,30 +101,20 @@ fn run_pin_toggles(
     hz: f64,
     tolerance_pct: f64,
 ) -> TestOutcome {
-    if let Err(outcome) = parse_pin_or_fail(name, pin) {
-        return outcome;
-    }
+    let parsed = match parse_pin_or_fail(name, pin) {
+        Ok(p) => p,
+        Err(outcome) => return outcome,
+    };
 
     // At least 3 full periods, flooring `hz` to avoid a division blowup on a
     // malformed-but-parsed near-zero frequency.
     let window = Duration::from_secs_f64(3.0 / hz.max(0.1));
-    let sample = match backend.sample(window) {
-        Ok(sample) => sample,
+    let readings = match poll_pin(backend, parsed.port, parsed.number, window) {
+        Ok(readings) => readings,
         Err(err) => return outcome_from_error(name, err),
     };
 
-    let rising_edges = sample
-        .readings
-        .windows(2)
-        .filter(|pair| !pair[0].1 && pair[1].1)
-        .count();
-
-    let window_secs = window.as_secs_f64();
-    let measured_hz = if window_secs > 0.0 {
-        rising_edges as f64 / window_secs
-    } else {
-        0.0
-    };
+    let measured_hz = measure_toggle_hz(&readings, window);
 
     let tolerance = hz.abs() * (tolerance_pct / 100.0);
     if (measured_hz - hz).abs() <= tolerance {
@@ -139,6 +131,38 @@ fn run_pin_toggles(
             status: TestStatus::Failed,
             detail: format!("measured {measured_hz:.2} Hz, expected {hz:.2} Hz ± {tolerance_pct}%"),
         }
+    }
+}
+
+/// Polls `backend.pin(port, pin_num)` — the actual pin the test asserted on,
+/// not a backend-hardcoded stand-in — at [`TOGGLE_POLL_INTERVAL`] until
+/// `window` elapses.
+fn poll_pin(
+    backend: &mut dyn Backend,
+    port: nucleus_db::Port,
+    pin_num: u8,
+    window: Duration,
+) -> Result<Vec<(Duration, bool)>, HilError> {
+    let start = Instant::now();
+    let mut readings = Vec::new();
+    while start.elapsed() < window {
+        let elapsed = start.elapsed();
+        readings.push((elapsed, backend.pin(port, pin_num)?));
+        std::thread::sleep(TOGGLE_POLL_INTERVAL);
+    }
+    Ok(readings)
+}
+
+fn measure_toggle_hz(readings: &[(Duration, bool)], window: Duration) -> f64 {
+    let rising_edges = readings
+        .windows(2)
+        .filter(|pair| !pair[0].1 && pair[1].1)
+        .count();
+    let window_secs = window.as_secs_f64();
+    if window_secs > 0.0 {
+        rising_edges as f64 / window_secs
+    } else {
+        0.0
     }
 }
 
@@ -260,16 +284,20 @@ mod tests {
         SampleTarget,
     };
     use nucleus_compiler::{BackendSelect, CheckReport};
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
 
     /// A controllable fake `Backend` for driving each `Assertion` arm
     /// deterministically — no real timing/sleeps involved beyond `PinState`'s
-    /// own short poll loop, which we bound with a tiny `within`.
+    /// and `PinToggles`'s own short poll loops, which we bound with a tiny
+    /// `within`/`hz`.
     struct FakeBackend {
         pin_result: Result<bool, HilErrorKind>,
         sample_result: Result<Sample, HilErrorKind>,
         itm_result: Result<Option<ItmEvent>, HilErrorKind>,
         pin_calls: Cell<u32>,
+        /// Every `(port, pin_num)` passed to `pin()`, in call order — lets
+        /// tests confirm a caller polled the pin it actually asked for.
+        pin_call_args: RefCell<Vec<(nucleus_db::Port, u8)>>,
         sample_calls: Cell<u32>,
         itm_calls: Cell<u32>,
     }
@@ -304,6 +332,7 @@ mod tests {
                 }),
                 itm_result: Ok(None),
                 pin_calls: Cell::new(0),
+                pin_call_args: RefCell::new(Vec::new()),
                 sample_calls: Cell::new(0),
                 itm_calls: Cell::new(0),
             }
@@ -323,8 +352,9 @@ mod tests {
             Ok(())
         }
 
-        fn pin(&mut self, _port: nucleus_db::Port, _pin_num: u8) -> Result<bool, HilError> {
+        fn pin(&mut self, port: nucleus_db::Port, pin_num: u8) -> Result<bool, HilError> {
             self.pin_calls.set(self.pin_calls.get() + 1);
+            self.pin_call_args.borrow_mut().push((port, pin_num));
             self.pin_result
                 .clone()
                 .map_err(HilErrorKind::into_hil_error)
@@ -393,56 +423,52 @@ mod tests {
     }
 
     #[test]
-    fn pin_toggles_within_tolerance_passes() {
+    fn measure_toggle_hz_within_tolerance_of_clean_square_wave() {
         let hz = 100.0;
         let window = Duration::from_secs_f64(3.0 / hz);
-        let mut backend = FakeBackend {
-            sample_result: Ok(Sample {
-                target: SampleTarget::Pin {
-                    port: nucleus_db::Port::A,
-                    pin_num: 5,
-                },
-                readings: toggles_readings(hz, window),
-            }),
-            ..FakeBackend::default()
-        };
-        let test = test_with(
-            Assertion::PinToggles {
-                pin: "PA5".to_string(),
-                hz,
-                tolerance_pct: 10.0,
-            },
-            BackendSelect::Both,
+        let measured = measure_toggle_hz(&toggles_readings(hz, window), window);
+        assert!(
+            (measured - hz).abs() <= hz * 0.10,
+            "measured {measured}, expected ~{hz}"
         );
-        let outcome = run(&mut backend, &test);
-        assert_eq!(outcome.status, TestStatus::Passed, "{}", outcome.detail);
     }
 
     #[test]
-    fn pin_toggles_outside_tolerance_fails() {
+    fn measure_toggle_hz_detects_signal_outside_tolerance() {
         let hz = 100.0;
         let window = Duration::from_secs_f64(3.0 / hz);
-        // Half the expected edges -> way outside tolerance.
-        let mut backend = FakeBackend {
-            sample_result: Ok(Sample {
-                target: SampleTarget::Pin {
-                    port: nucleus_db::Port::A,
-                    pin_num: 5,
-                },
-                readings: toggles_readings(hz / 4.0, window),
-            }),
-            ..FakeBackend::default()
-        };
+        // Quarter the expected edges -> way outside tolerance.
+        let measured = measure_toggle_hz(&toggles_readings(hz / 4.0, window), window);
+        assert!(
+            (measured - hz).abs() > hz * 0.05,
+            "measured {measured}, expected far from {hz}"
+        );
+    }
+
+    #[test]
+    fn pin_toggles_polls_the_parsed_pin_not_a_hardcoded_default() {
+        // Issue #45: the parsed `pin` used to be discarded and `sample()`
+        // always queried a backend-hardcoded observable. Every poll here
+        // must target PB6 — the pin the assertion actually names — not PA5
+        // or any other default.
+        let mut backend = FakeBackend::default();
         let test = test_with(
             Assertion::PinToggles {
-                pin: "PA5".to_string(),
-                hz,
-                tolerance_pct: 5.0,
+                pin: "PB6".to_string(),
+                hz: 300.0,
+                tolerance_pct: 100.0,
             },
             BackendSelect::Both,
         );
-        let outcome = run(&mut backend, &test);
-        assert_eq!(outcome.status, TestStatus::Failed);
+        let _ = run(&mut backend, &test);
+        let calls = backend.pin_call_args.borrow();
+        assert!(!calls.is_empty(), "expected backend.pin() to be polled");
+        assert!(
+            calls
+                .iter()
+                .all(|&(port, num)| port == nucleus_db::Port::B && num == 6),
+            "expected every poll to target the parsed pin PB6, got {calls:?}"
+        );
     }
 
     #[test]
@@ -600,7 +626,7 @@ mod tests {
     #[test]
     fn protocol_error_is_failed_not_skipped() {
         let mut backend = FakeBackend {
-            sample_result: Err(HilErrorKind::Protocol("truncated reply".to_string())),
+            pin_result: Err(HilErrorKind::Protocol("truncated reply".to_string())),
             ..FakeBackend::default()
         };
         let test = test_with(
