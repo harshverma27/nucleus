@@ -150,7 +150,7 @@ jobs:
         if: ${{ env.CARGO_REGISTRY_TOKEN != '' }}
         run: |
           set -euo pipefail
-          for crate in nucleus-db nucleus-itm nucleus-compiler nucleus-lsp nucleus-trace nucleus-cli; do
+          for crate in nucleus-db nucleus-itm nucleus-history nucleus-compiler nucleus-trace nucleus-lsp nucleus-hil nucleus-test-sdk nucleus-cli; do
             echo "::group::publish $crate"
             cargo publish -p "$crate"
             echo "::endgroup::"

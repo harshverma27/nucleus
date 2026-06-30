@@ -20,7 +20,7 @@ serde_json = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time", "process"] }
-nucleus-test-sdk = { path = "../nucleus-test-sdk", version = "0.2.0" }
+nucleus-test-sdk = { path = "../nucleus-test-sdk" }
 
 [lints]
 workspace = true
