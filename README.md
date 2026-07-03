@@ -1,5 +1,7 @@
 # Nucleus
 
+https://github.com/harshverma27/nucleus/raw/main/media/nucleus-brag.mp4
+
 ![stm32.toml example](stm32.toml.png)
 
 > A CLI-first STM32 developer platform: declarative hardware configuration,
